@@ -32,6 +32,13 @@
       return true;
     }
 
+    if (msg.action === 'collectMyStuff') {
+      collectMyStuff()
+        .then((result) => sendResponse(result))
+        .catch((err) => sendResponse({ error: err.message, documents: [], media: [] }));
+      return true;
+    }
+
     if (msg.action === 'downloadFiles') {
       downloadFilesAsBlobs(msg.files)
         .then((result) => sendResponse(result))
@@ -296,6 +303,83 @@
       lastMessageAt,
       exportedAt: new Date().toISOString(),
     };
+  }
+
+  // ---- My Stuff: DOM-based collection ----
+
+  async function collectMyStuff() {
+    // Navigate to /mystuff/documents and scrape
+    var bodyText = document.querySelector('body').innerText;
+
+    // Parse documents: format is "title\npreview\ndate\n"
+    var documents = [];
+    var docStart = bodyText.indexOf('Documents');
+    if (docStart >= 0) {
+      var docSection = bodyText;
+      // Find where documents end (at "Media" or "Settings" or end)
+      var mediaIdx = bodyText.indexOf('\nMedia\n', docStart);
+      var settingsIdx = bodyText.indexOf('\nSettings', docStart);
+      var endIdx = mediaIdx > 0 ? mediaIdx : (settingsIdx > 0 ? settingsIdx : bodyText.length);
+      docSection = bodyText.substring(docStart + 'Documents\n'.length, endIdx);
+
+      // Date pattern: Mon DD or Mon YYYY format
+      var datePattern = /^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}(?:,\s*\d{4})?$/;
+
+      var lines = docSection.split('\n');
+      var currentTitle = '';
+      var currentPreview = '';
+
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim();
+        if (!line) continue;
+
+        if (datePattern.test(line)) {
+          // This line is a date — save current document
+          if (currentTitle) {
+            documents.push({
+              title: currentTitle,
+              preview: currentPreview,
+              date: line,
+              exportedAt: new Date().toISOString(),
+            });
+          }
+          currentTitle = '';
+          currentPreview = '';
+        } else if (!currentTitle) {
+          currentTitle = line;
+        } else {
+          currentPreview = currentPreview ? (currentPreview + '\n' + line) : line;
+        }
+      }
+      // Last document might not have a date after it
+      if (currentTitle) {
+        documents.push({
+          title: currentTitle,
+          preview: currentPreview,
+          date: '',
+          exportedAt: new Date().toISOString(),
+        });
+      }
+    }
+
+    // Collect media image URLs
+    var media = [];
+    var imgs = document.querySelectorAll('img');
+    for (var j = 0; j < imgs.length; j++) {
+      var src = imgs[j].src || '';
+      if (src.includes('googleusercontent') && src.includes('w176')) {
+        // Get full-size URL by removing size constraints
+        var fullSrc = src.replace(/=w\d+-h\d+-[^\s]*/g, '=s0');
+        media.push({
+          thumbnail: src,
+          fullSize: fullSrc,
+          alt: imgs[j].alt || '',
+          exportedAt: new Date().toISOString(),
+        });
+      }
+    }
+
+    return { documents: documents, media: media, count: documents.length + media.length };
   }
 
   // ---- API: List all Gems via CNgdBe ----

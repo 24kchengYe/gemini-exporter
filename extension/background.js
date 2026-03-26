@@ -369,6 +369,118 @@ async function startGemsExport() {
   }
 }
 
+// ---- My Stuff export flow ----
+
+async function startMyStuffExport() {
+  const state = await getState();
+  if (state.running) {
+    sendLog('Export already in progress.');
+    return;
+  }
+
+  await setState({ running: true, cancelled: false, completed: false });
+
+  try {
+    // Step 1: Navigate to /mystuff/documents
+    sendLog('Navigating to My Stuff documents...');
+    const tabs = await chrome.tabs.query({ url: 'https://gemini.google.com/*' });
+    let tabId;
+    if (tabs.length > 0) {
+      tabId = tabs[0].id;
+      await chrome.tabs.update(tabId, { url: 'https://gemini.google.com/mystuff/documents', active: true });
+    } else {
+      const tab = await chrome.tabs.create({ url: 'https://gemini.google.com/mystuff/documents', active: true });
+      tabId = tab.id;
+    }
+
+    // Wait for page load
+    await new Promise((resolve) => {
+      function listener(id, info) {
+        if (id === tabId && info.status === 'complete') {
+          chrome.tabs.onUpdated.removeListener(listener);
+          resolve();
+        }
+      }
+      chrome.tabs.onUpdated.addListener(listener);
+      setTimeout(resolve, 15000);
+    });
+    await sleep(3000);
+    geminiTabId = tabId;
+
+    sendLog('Collecting documents from DOM...');
+    const result = await sendToContent(tabId, { action: 'collectMyStuff' });
+
+    if (result?.error) {
+      sendLog('Error: ' + result.error);
+      await setState({ running: false });
+      return;
+    }
+
+    const docs = result?.documents || [];
+    const media = result?.media || [];
+    sendLog('Found ' + docs.length + ' documents, ' + media.length + ' media items.');
+
+    const files = {};
+
+    // Export documents
+    for (const doc of docs) {
+      const name = safeName(doc.title, '');
+      const docMd = `# ${doc.title}\n\n**Date:** ${doc.date || 'Unknown'}\n\n${doc.preview}\n`;
+      files['mystuff/docs/' + name + '.md'] = docMd;
+      files['mystuff/docs/' + name + '.json'] = JSON.stringify(doc, null, 2);
+    }
+
+    // Export media URLs
+    if (media.length > 0) {
+      const mediaIndex = media.map((m, i) => ({
+        index: i + 1,
+        thumbnail: m.thumbnail,
+        fullSize: m.fullSize,
+        alt: m.alt,
+      }));
+      files['mystuff/media/_media_index.json'] = JSON.stringify(mediaIndex, null, 2);
+
+      let mediaMd = '# Gemini Media Export\n\nTotal: ' + media.length + ' images\n\n';
+      media.forEach(function(m, i) {
+        mediaMd += '## Image ' + (i + 1) + '\n\n';
+        mediaMd += '- Full size: ' + m.fullSize + '\n';
+        mediaMd += '- Thumbnail: ' + m.thumbnail + '\n\n';
+      });
+      files['mystuff/media/_media_index.md'] = mediaMd;
+    }
+
+    // Merged summary
+    files['mystuff/_mystuff_summary.json'] = JSON.stringify({
+      documents: docs,
+      mediaCount: media.length,
+      exportedAt: new Date().toISOString(),
+    }, null, 2);
+
+    let summaryMd = '# Gemini My Stuff Export\n\n';
+    summaryMd += 'Date: ' + new Date().toISOString() + '\n';
+    summaryMd += 'Documents: ' + docs.length + '\n';
+    summaryMd += 'Media: ' + media.length + '\n\n';
+    summaryMd += '## Documents\n\n';
+    for (const doc of docs) {
+      summaryMd += '### ' + doc.title + '\n';
+      summaryMd += '*' + (doc.date || 'Unknown date') + '*\n\n';
+      summaryMd += doc.preview + '\n\n---\n\n';
+    }
+    files['mystuff/_mystuff_summary.md'] = summaryMd;
+
+    sendLog('Downloading ' + Object.keys(files).length + ' files...');
+    await sendToContent(tabId, { action: 'downloadFiles', files });
+
+    await setState({ running: false, completed: true, currentTitle: '' });
+    chrome.runtime.sendMessage({ type: 'done', state: await getState() }).catch(() => {});
+    sendLog('Done! Exported ' + docs.length + ' documents + ' + media.length + ' media.');
+  } catch (err) {
+    sendLog('Fatal error: ' + err.message);
+    chrome.runtime.sendMessage({ type: 'error', text: err.message }).catch(() => {});
+    await setState({ running: false });
+  }
+}
+
 // ---- Message listener ----
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -377,6 +489,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     sendResponse({ ok: true });
   } else if (msg.action === 'startGemsExport') {
     startGemsExport();
+    sendResponse({ ok: true });
+  } else if (msg.action === 'startMyStuffExport') {
+    startMyStuffExport();
     sendResponse({ ok: true });
   } else if (msg.action === 'cancelExport') {
     setState({ cancelled: true, running: false });

@@ -111,7 +111,8 @@ h1 {
 
 .actions {
   display: flex;
-  gap: 8px;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .btn {
@@ -158,6 +159,11 @@ h1 {
 
 .btn-gems {
   background: linear-gradient(135deg, #9b72cb, #b388eb);
+  color: white;
+}
+
+.btn-mystuff {
+  background: linear-gradient(135deg, #d96570, #e8937c);
   color: white;
 }
 

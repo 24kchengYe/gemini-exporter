@@ -3,6 +3,7 @@
 
   const startBtn = $('#startBtn');
   const gemsBtn = $('#gemsBtn');
+  const myStuffBtn = $('#myStuffBtn');
   const cancelBtn = $('#cancelBtn');
   const resetBtn = $('#resetBtn');
   const downloadBtn = $('#downloadBtn');
@@ -39,6 +40,7 @@
     if (state.running) {
       startBtn.style.display = 'none';
       gemsBtn.style.display = 'none';
+      myStuffBtn.style.display = 'none';
       cancelBtn.style.display = 'flex';
       resetBtn.disabled = true;
       progressSection.style.display = 'block';
@@ -53,6 +55,7 @@
     } else {
       startBtn.style.display = 'flex';
       gemsBtn.style.display = 'flex';
+      myStuffBtn.style.display = 'flex';
       cancelBtn.style.display = 'none';
       resetBtn.disabled = false;
 
@@ -98,6 +101,19 @@
   startBtn.addEventListener('click', () => {
     log('Starting export...');
     chrome.runtime.sendMessage({ action: 'startExport' }, (resp) => {
+      if (chrome.runtime.lastError) {
+        log('Error: ' + chrome.runtime.lastError.message);
+        return;
+      }
+      if (resp && resp.error) {
+        log('Error: ' + resp.error);
+      }
+    });
+  });
+
+  myStuffBtn.addEventListener('click', () => {
+    log('Starting My Stuff export...');
+    chrome.runtime.sendMessage({ action: 'startMyStuffExport' }, (resp) => {
       if (chrome.runtime.lastError) {
         log('Error: ' + chrome.runtime.lastError.message);
         return;
