@@ -156,6 +156,11 @@ h1 {
   color: white;
 }
 
+.btn-gems {
+  background: linear-gradient(135deg, #9b72cb, #b388eb);
+  color: white;
+}
+
 .btn-secondary {
   background: #252545;
   color: #aaa;

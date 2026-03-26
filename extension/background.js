@@ -274,11 +274,109 @@ async function startExport() {
   }
 }
 
+// ---- Gems export flow ----
+
+function gemToMarkdown(gem) {
+  const sep = '============================================================';
+  let md = `${sep}\n`;
+  md += `# ${gem.name}\n\n`;
+  if (gem.description) md += `**Description:** ${gem.description}\n\n`;
+  md += `**Type:** ${gem.isCustom ? 'Custom' : 'System/Predefined'}\n`;
+  md += `**ID:** ${gem.id}\n`;
+  md += `**Exported:** ${gem.exportedAt}\n\n`;
+  if (gem.prompt) {
+    md += `## System Instructions\n\n${gem.prompt}\n\n`;
+  }
+  md += `${sep}\n\n`;
+  return md;
+}
+
+async function startGemsExport() {
+  const state = await getState();
+  if (state.running) {
+    sendLog('Export already in progress.');
+    return;
+  }
+
+  await setState({ running: true, cancelled: false, completed: false });
+
+  try {
+    const tabId = await ensureGeminiTab();
+    sendLog('Connected to Gemini tab.');
+    sendLog('Fetching Gems via API...');
+
+    const result = await sendToContent(tabId, { action: 'apiListGems' });
+
+    if (result?.error) {
+      sendLog(`Error: ${result.error}`);
+      await setState({ running: false });
+      return;
+    }
+
+    const gems = result?.gems || [];
+    if (gems.length === 0) {
+      sendLog('No Gems found.');
+      await setState({ running: false, completed: true });
+      return;
+    }
+
+    const customGems = gems.filter(g => g.isCustom);
+    const systemGems = gems.filter(g => !g.isCustom);
+    sendLog(`Found ${gems.length} Gems (${customGems.length} custom, ${systemGems.length} system).`);
+
+    // Download individual Gem files
+    const files = {};
+
+    for (const gem of gems) {
+      const prefix = gem.isCustom ? 'custom' : 'system';
+      const name = safeName(gem.name, gem.id);
+      files[`gems/${prefix}_${name}.json`] = JSON.stringify(gem, null, 2);
+      files[`gems/${prefix}_${name}.md`] = gemToMarkdown(gem);
+    }
+
+    // Merged files
+    files['gems/_all_gems.json'] = JSON.stringify(gems, null, 2);
+
+    let mergedMd = `# Gemini Gems Export\n\nTotal: ${gems.length} (${customGems.length} custom, ${systemGems.length} system)\nDate: ${new Date().toISOString()}\n\n`;
+    mergedMd += '## Custom Gems\n\n';
+    for (const gem of customGems) mergedMd += gemToMarkdown(gem);
+    if (systemGems.length > 0) {
+      mergedMd += '## System/Predefined Gems\n\n';
+      for (const gem of systemGems) mergedMd += gemToMarkdown(gem);
+    }
+    files['gems/_all_gems.md'] = mergedMd;
+
+    // Summary index
+    const index = gems.map(g => ({
+      id: g.id,
+      name: g.name,
+      isCustom: g.isCustom,
+      hasPrompt: !!g.prompt,
+      descriptionPreview: (g.description || '').slice(0, 100),
+    }));
+    files['gems/_gems_index.json'] = JSON.stringify(index, null, 2);
+
+    sendLog(`Downloading ${Object.keys(files).length} files...`);
+    await sendToContent(tabId, { action: 'downloadFiles', files });
+
+    await setState({ running: false, completed: true, currentTitle: '' });
+    chrome.runtime.sendMessage({ type: 'done', state: await getState() }).catch(() => {});
+    sendLog(`Done! Exported ${gems.length} Gems.`);
+  } catch (err) {
+    sendLog(`Fatal error: ${err.message}`);
+    chrome.runtime.sendMessage({ type: 'error', text: err.message }).catch(() => {});
+    await setState({ running: false });
+  }
+}
+
 // ---- Message listener ----
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === 'startExport') {
     startExport();
+    sendResponse({ ok: true });
+  } else if (msg.action === 'startGemsExport') {
+    startGemsExport();
     sendResponse({ ok: true });
   } else if (msg.action === 'cancelExport') {
     setState({ cancelled: true, running: false });

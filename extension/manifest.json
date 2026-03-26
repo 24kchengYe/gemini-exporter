@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Gemini Conversation Exporter",
-  "version": "1.0.0",
-  "description": "Export all your Gemini conversations to JSON and Markdown files.",
+  "version": "1.1.0",
+  "description": "Export Gemini conversations and Gems (My Stuff) to JSON and Markdown files.",
   "permissions": [
     "activeTab",
     "storage",

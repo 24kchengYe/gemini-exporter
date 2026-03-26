@@ -25,6 +25,13 @@
       return true;
     }
 
+    if (msg.action === 'apiListGems') {
+      apiListGems()
+        .then((result) => sendResponse(result))
+        .catch((err) => sendResponse({ error: err.message, gems: [] }));
+      return true;
+    }
+
     if (msg.action === 'downloadFiles') {
       downloadFilesAsBlobs(msg.files)
         .then((result) => sendResponse(result))
@@ -289,6 +296,158 @@
       lastMessageAt,
       exportedAt: new Date().toISOString(),
     };
+  }
+
+  // ---- API: List all Gems via CNgdBe ----
+
+  async function apiListGems() {
+    const tokens = extractTokens();
+    if (!tokens) throw new Error('Token extraction failed. Are you logged in?');
+
+    // Two calls: custom gems (type 2) and system/predefined gems (type 3)
+    const customPayload = JSON.stringify([2, ['en'], 0]);
+    const systemPayload = JSON.stringify([3, ['en'], 0]);
+
+    const fReq = JSON.stringify([[
+      ['CNgdBe', customPayload, null, 'custom'],
+      ['CNgdBe', systemPayload, null, 'system'],
+    ]]);
+
+    const params = new URLSearchParams({
+      rpcids: 'CNgdBe',
+      'source-path': '/gems/view',
+      hl: 'en',
+      rt: 'c',
+    });
+    if (tokens.bl) params.set('bl', tokens.bl);
+
+    const body = new URLSearchParams({
+      at: tokens.at,
+      'f.req': fReq,
+    });
+
+    const resp = await fetch(
+      `https://gemini.google.com/_/BardChatUi/data/batchexecute?${params}`,
+      {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8',
+        },
+        body: body.toString(),
+      }
+    );
+
+    if (!resp.ok) throw new Error(`API ${resp.status} ${resp.statusText}`);
+    if (resp.url && resp.url.includes('/sorry')) throw new Error('Rate limited by Google.');
+
+    const text = await resp.text();
+    return parseGemsResponse(text);
+  }
+
+  function parseGemsResponse(rawText) {
+    const allGems = [];
+
+    // Find all CNgdBe responses in the batchexecute output
+    let searchFrom = 0;
+    while (true) {
+      const marker = '"wrb.fr","CNgdBe","';
+      const idx = rawText.indexOf(marker, searchFrom);
+      if (idx < 0) break;
+
+      let bracketStart = idx;
+      while (bracketStart > 0 && rawText[bracketStart] !== '[') bracketStart--;
+
+      var pos = idx + marker.length;
+      var parsed = null;
+      for (var attempt = 0; attempt < 50; attempt++) {
+        var gi = rawText.indexOf('"]', pos);
+        if (gi < 0) break;
+        // Try different closing patterns
+        for (const closing of ['"]', '",null,', '","custom"]', '","system"]']) {
+          var ci = rawText.indexOf(closing, pos);
+          if (ci < 0) continue;
+          var endIdx = ci + closing.length;
+          // Find the ] that closes the outer array
+          if (!closing.endsWith(']')) {
+            var depth = 0;
+            for (var k = endIdx; k < rawText.length && k < endIdx + 50; k++) {
+              if (rawText[k] === '[') depth++;
+              if (rawText[k] === ']') {
+                if (depth === 0) { endIdx = k + 1; break; }
+                depth--;
+              }
+            }
+          }
+          var candidate = rawText.substring(bracketStart, endIdx);
+          try {
+            var arr = JSON.parse(candidate);
+            if (arr[0] === 'wrb.fr' && arr[1] === 'CNgdBe' && typeof arr[2] === 'string') {
+              parsed = JSON.parse(arr[2]);
+              break;
+            }
+          } catch (e) { /* keep trying */ }
+        }
+        if (parsed) break;
+        pos = gi + 1;
+      }
+
+      if (parsed) {
+        extractGemsFromParsed(parsed, allGems);
+      }
+
+      searchFrom = idx + marker.length;
+    }
+
+    return { gems: allGems, count: allGems.length };
+  }
+
+  function extractGemsFromParsed(parsed, allGems) {
+    if (!Array.isArray(parsed)) return;
+
+    // The gem list is typically at parsed[2] — an array of gem records
+    // But structure can vary, so we search for arrays that look like gem records
+    const gemArrays = [];
+
+    // Try parsed[2] first (most common location)
+    if (Array.isArray(parsed[2])) {
+      gemArrays.push(parsed[2]);
+    }
+    // Also try parsed[0] in case of different response structure
+    if (Array.isArray(parsed[0]) && parsed[0].length > 0 && Array.isArray(parsed[0][0])) {
+      gemArrays.push(parsed[0]);
+    }
+
+    for (const gems of gemArrays) {
+      for (const gem of gems) {
+        if (!Array.isArray(gem)) continue;
+
+        try {
+          const id = gem[0];
+          if (!id || typeof id !== 'string') continue;
+
+          // Skip if already added
+          if (allGems.some(g => g.id === id)) continue;
+
+          const name = gem[1]?.[0] || 'Unnamed Gem';
+          const description = gem[1]?.[1] || '';
+          const prompt = gem[2]?.[0] || '';
+
+          // Determine if custom or system gem
+          // Custom gems typically have editable prompts; system gems have predefined ones
+          const isCustom = !!prompt && !id.startsWith('_');
+
+          allGems.push({
+            id,
+            name,
+            description,
+            prompt,
+            isCustom,
+            exportedAt: new Date().toISOString(),
+          });
+        } catch (e) { /* skip malformed gem */ }
+      }
+    }
   }
 
   // ---- Helper: find wrb.fr payload in nested array ----
