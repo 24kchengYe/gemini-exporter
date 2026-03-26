@@ -153,7 +153,9 @@
       }
     );
 
-    if (!resp.ok) throw new Error(`API ${resp.status}`);
+    if (!resp.ok) throw new Error(`API ${resp.status} ${resp.statusText}`);
+    // Check for redirect to /sorry (rate limiting)
+    if (resp.url && resp.url.includes('/sorry')) throw new Error('Rate limited by Google. Wait a few minutes.');
 
     const text = await resp.text();
     return parseConversationResponse(text, convId);

@@ -214,8 +214,8 @@ async function startExport() {
         await setState({ exportedIds, skippedCount, conversations });
         sendProgress(await getState());
 
-        // Small delay to be polite
-        await sleep(300);
+        // Delay between requests to avoid rate limiting
+        await sleep(1500);
       } catch (err) {
         sendLog(`  Error: ${err.message.slice(0, 80)}`);
         skippedCount++;
