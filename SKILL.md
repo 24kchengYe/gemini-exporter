@@ -1,9 +1,9 @@
 ---
 name: gemini-exporter
 description: |
-  Export all Google Gemini conversations via Chrome Extension or Playwright DOM extraction.
-  Chrome Extension method: one-click export with visual progress UI, resume support, and automatic file downloads.
-  Playwright method: scrolls sidebar to discover all conversations, navigates to each one, scrolls up to load full history, extracts messages from DOM.
+  Export all Google Gemini conversations via Chrome Extension using internal batchexecute API.
+  Hybrid approach: sidebar DOM for conversation list + hNvQHb RPC for complete content.
+  One-click batch export with visual progress UI, timestamps, resume support, and automatic file downloads.
 
   Trigger on these phrases:
   - "/gemini-exporter", "导出Gemini", "导出Gemini对话", "export gemini"
@@ -11,68 +11,34 @@ description: |
   - "抓取Gemini", "下载Gemini对话", "Gemini数据导出"
 ---
 
-# Gemini Exporter — Full Conversation Export
+# Gemini Exporter — Batch Conversation Export via Internal API
 
-Export **all** your Google Gemini conversations. Two methods:
+Chrome Extension (Manifest V3) that exports all Gemini conversations using a hybrid approach:
+sidebar DOM scrolling for conversation list + `hNvQHb` batchexecute RPC for complete content.
 
-## Method 1: Chrome Extension (Recommended)
+## Key Files
 
-Located in `extension/` directory. Install via `chrome://extensions/` → Load unpacked.
+- `extension/manifest.json` — Manifest V3, permissions: storage, unlimitedStorage, scripting, tabs, downloads
+- `extension/background.js` — Export orchestrator, manages sidebar scan → API fetch → download loop
+- `extension/content.js` — Runs on gemini.google.com: token extraction, API calls, response parsing, Blob downloads
+- `extension/popup.html/js/css` — Dark theme UI with progress bar, stats, log
+- `extension/gemini-api.js` — Standalone API client (reference, not used by extension)
+- `debug/` — Chrome Snippets for testing API responses on different accounts
 
-### How It Works
+## Architecture
 
-1. Content script runs on gemini.google.com pages
-2. Scrolls sidebar to discover all conversation URLs
-3. Navigates to each conversation via tab.update
-4. Content script scrolls up to load lazy-loaded messages
-5. Extracts User/Gemini messages from DOM selectors
-6. Downloads each conversation as JSON + Markdown via chrome.downloads API
-7. Generates merged output files at the end
+1. **Sidebar DOM scroll** → collect `a[href*="/app/"]` URLs + `innerText` first line as title
+2. **Token extraction** → `SNlM0e` (CSRF) + `cfb2h` (build label) from page HTML
+3. **For each conversation** → `hNvQHb` batchexecute with `c_` prefixed ID, limit=1000
+4. **Parse response** → find `["wrb.fr","hNvQHb","..."]` array, JSON.parse outer then inner
+5. **Extract data** → user: `turn[2][0][0]`, model: `turn[3][0][0][1]`, timestamp: `turn[4][0]`
+6. **Download** → Blob URL via content script `<a download="filename">`
 
-### Key Files
+## Critical Notes
 
-- `extension/manifest.json` — Manifest V3 config
-- `extension/background.js` — Export orchestrator (tab management, download, resume logic)
-- `extension/content.js` — DOM extraction (sidebar scroll, message extraction, 3 strategies)
-- `extension/popup.html/js/css` — UI with progress bar, log, stats
-
-### DOM Selectors
-
-- User messages: `.query-text` (content prefix "You said" removed)
-- Gemini replies: `.markdown.markdown-main-panel`
-- Conversation containers: `.conversation-container`
-- Sidebar links: `a[href*="/app/"]`
-- Title: `document.title.replace(' - Google Gemini', '')`
-
-### Resume Support
-
-- `exportedIds` array stored in `chrome.storage.local`
-- `urlList` cached after first sidebar scan
-- Already-exported conversations skipped automatically
-- Safe to close popup and reopen — state persists
-
-## Method 2: Playwright Script (Legacy)
-
-### Prerequisites
-
-- Python 3.10+
-- `pip install playwright`
-- Chrome launched with `--remote-debugging-port=9222`
-
-### Usage
-
-```bash
-# Windows
-"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="C:\Users\USERNAME\chrome-debug-profile" --proxy-server="http://127.0.0.1:2080"
-
-# Then run
-$env:NO_PROXY = "localhost,127.0.0.1"
-python -u scripts/gemini_export_dom.py
-```
-
-## Output
-
-- `gemini-export/{title}_{id}.json` — Individual conversation JSON
-- `gemini-export/{title}_{id}.md` — Individual conversation Markdown
-- `gemini-export/_all_conversations.json` — Merged JSON
-- `gemini-export/_all_conversations.md` — Merged Markdown
+- `MaZiqc` (list API) returns **encrypted** data — unusable, must use sidebar DOM instead
+- Conversation IDs need `c_` prefix for API (URL has `a1b96a10`, API needs `c_a1b96a10`)
+- Model response is at `turn[3][0][0]` not `turn[3][0]` (extra nesting layer)
+- Don't store full conversations in `chrome.storage` (quota limit) — use `unlimitedStorage` + memory only
+- Content script: don't use `__injected` guard — prevents code updates on extension reload
+- Google rate limits after ~30+ rapid requests — 1.5s delay between calls, retry after 5-10 min on 405
