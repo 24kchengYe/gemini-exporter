@@ -160,55 +160,76 @@
   }
 
   function parseConversationResponse(rawText, convId) {
-    // Find the hNvQHb payload
-    const marker = '"wrb.fr","hNvQHb","';
-    const idx = rawText.indexOf(marker);
-    if (idx < 0) return { error: 'No hNvQHb data', messages: [] };
+    // Strategy: parse the entire response frame, not just the payload string
+    // The response has format: )]}'\n<len>\n<json_array>\n<len>\n...
+    // We parse each frame and look for the wrb.fr entry
 
-    const payloadStart = idx + marker.length;
+    let text = rawText;
+    if (text.startsWith(")]}'")) {
+      text = text.substring(text.indexOf('\n') + 1);
+    }
 
-    // Find the end - look for ","generic"]
-    // The payload is a JSON-escaped string, so we need to find the unescaped closing
-    let depth = 0;
-    let inStr = false;
-    let escape = false;
-    let end = payloadStart;
+    let parsed = null;
 
-    // Actually, simpler: the payload starts with [[ and we need to extract it
-    // It's embedded as an escaped JSON string, so find the closing ","
-    // Strategy: find '","generic"' but be careful of escaped quotes
+    // Try parsing each length-prefixed frame
+    let pos = 0;
+    while (pos < text.length && !parsed) {
+      const nlIdx = text.indexOf('\n', pos);
+      if (nlIdx < 0) break;
+      const lenStr = text.substring(pos, nlIdx).trim();
+      const len = parseInt(lenStr, 10);
+      if (isNaN(len) || len <= 0) { pos = nlIdx + 1; continue; }
 
-    // Count from payloadStart, find where the escaped JSON string ends
-    for (let i = payloadStart; i < rawText.length; i++) {
-      if (escape) { escape = false; continue; }
-      if (rawText[i] === '\\') { escape = true; continue; }
-      if (rawText[i] === '"') {
-        // Check if followed by ,"generic"
-        if (rawText.substring(i + 1, i + 12) === ',"generic"') {
-          end = i;
-          break;
+      // Extract frame - try parsing it
+      // Note: len is in bytes but JS strings are UTF-16, so we try multiple approaches
+      const frameStart = nlIdx + 1;
+
+      // Try to parse starting from frameStart
+      for (const tryLen of [len, len * 2, Math.floor(len / 2)]) {
+        const candidate = text.substring(frameStart, frameStart + tryLen);
+        try {
+          const arr = JSON.parse(candidate);
+          if (Array.isArray(arr)) {
+            // Look for wrb.fr,hNvQHb entry
+            const payload = findWrbFr(arr, 'hNvQHb');
+            if (payload) {
+              parsed = typeof payload === 'string' ? JSON.parse(payload) : payload;
+              break;
+            }
+          }
+        } catch (e) { /* try next length */ }
+      }
+
+      pos = frameStart + len;
+    }
+
+    // Fallback: try to find and extract the JSON payload directly using regex-like approach
+    if (!parsed) {
+      try {
+        // Find the wrb.fr array in the raw text by looking for valid JSON arrays
+        const marker = '"wrb.fr","hNvQHb","';
+        const idx = rawText.indexOf(marker);
+        if (idx >= 0) {
+          const payloadStart = idx + marker.length;
+          // Walk forward tracking escape chars to find the end quote
+          let esc = false, end = payloadStart;
+          for (let i = payloadStart; i < rawText.length; i++) {
+            if (esc) { esc = false; continue; }
+            if (rawText[i] === '\\') { esc = true; continue; }
+            if (rawText[i] === '"') { end = i; break; }
+          }
+          const raw = rawText.substring(payloadStart, end);
+          // Unescape: the string is JSON-escaped inside the outer JSON
+          const unescaped = raw.replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+          parsed = JSON.parse(unescaped);
         }
+      } catch (e) {
+        return { error: 'Parse failed: ' + e.message, messages: [] };
       }
     }
 
-    const rawPayload = rawText.substring(payloadStart, end);
-
-    // Unescape the JSON string
-    let parsed;
-    try {
-      parsed = JSON.parse(JSON.parse('"' + rawPayload + '"'));
-    } catch (e) {
-      // Try direct unescape
-      try {
-        const unescaped = rawPayload
-          .replace(/\\"/g, '"')
-          .replace(/\\\\/g, '\\')
-          .replace(/\\n/g, '\n')
-          .replace(/\\t/g, '\t');
-        parsed = JSON.parse(unescaped);
-      } catch (e2) {
-        return { error: 'Parse failed: ' + e2.message, messages: [] };
-      }
+    if (!parsed) {
+      return { error: 'No parseable data found', messages: [] };
     }
 
     if (!parsed || !Array.isArray(parsed)) {
@@ -271,6 +292,18 @@
       url: `https://gemini.google.com/app/${convId}`,
       exportedAt: new Date().toISOString(),
     };
+  }
+
+  // ---- Helper: find wrb.fr payload in nested array ----
+
+  function findWrbFr(node, rpcId) {
+    if (!Array.isArray(node)) return null;
+    if (node[0] === 'wrb.fr' && node[1] === rpcId) return node[2];
+    for (const child of node) {
+      const r = findWrbFr(child, rpcId);
+      if (r !== null) return r;
+    }
+    return null;
   }
 
   // ---- File download via Blob URLs ----
