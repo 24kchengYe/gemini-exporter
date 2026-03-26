@@ -1,88 +1,119 @@
 # Gemini Exporter
 
-Export **all** your Google Gemini conversations with full message history. Two methods available:
+Export **all** your Google Gemini conversations with complete message history, timestamps, and proper titles. Uses Gemini's internal API for fast, complete extraction — no scrolling, no DOM scraping.
 
-1. **Chrome Extension** (recommended) — Fast, reliable, with visual progress UI
-2. **Playwright Script** (legacy) — Python-based DOM extraction via CDP
+![Gemini Exporter in action](extension/screenshot.png)
 
-## Method 1: Chrome Extension (Recommended)
+## Features
 
-### Install
+- **One-click batch export** — Export all 400+ conversations automatically
+- **Complete content** — Full user messages + Gemini responses via internal API (`hNvQHb` RPC)
+- **Timestamps** — Created date and last message date extracted from API data
+- **Smart titles** — Sidebar title (preferred) or first user message
+- **Resume support** — Already-exported conversations are skipped on restart
+- **Dual format** — Each conversation saved as JSON + Markdown
+- **Fast** — ~1.5 seconds per conversation (API call, no page navigation needed)
 
-1. Open `chrome://extensions/` in Chrome
-2. Enable **Developer mode** (top-right toggle)
-3. Click **Load unpacked** and select the `extension/` directory
+## Install
 
-### Usage
+1. Open `chrome://extensions/`
+2. Enable **Developer mode** (top-right)
+3. Click **Load unpacked** → select the `extension/` folder
+4. Navigate to [gemini.google.com](https://gemini.google.com/app), log in, expand sidebar
+5. Click the extension icon → **Start Export**
 
-1. Navigate to [gemini.google.com](https://gemini.google.com/app) and log in
-2. Expand the sidebar (hamburger menu) so conversations are visible
-3. Click the **Gemini Exporter** extension icon
-4. Click **Start Export**
-5. Watch progress in the popup — files download automatically to `gemini-export/`
-
-### Features
-
-- **One-click export** — No terminal, no Python, no CDP setup
-- **Visual progress** — Real-time progress bar, conversation titles, log
-- **Resume support** — Restart anytime, already-exported conversations are skipped
-- **Cancel & restart** — Stop mid-export, continue later
-- **Reset history** — Clear export state to re-export everything
-- **Dual output** — Each conversation saved as JSON + Markdown
-- **Merged files** — Combined `_all_conversations.json` + `_all_conversations.md`
-- **3-strategy DOM extraction** — Handles different Gemini page structures gracefully
-
-### Output
-
-Files are downloaded to your default Downloads folder under `gemini-export/`:
+## How It Works
 
 ```
-gemini-export/
-├── 访学申请信_a1b96a10.json
-├── 访学申请信_a1b96a10.md
-├── Claude Code安装指南_471c4c1d.json
-├── Claude Code安装指南_471c4c1d.md
-├── ...
-├── _all_conversations.json        # Merged JSON
-└── _all_conversations.md          # Merged Markdown
+┌─────────────────────────────────────────────┐
+│  Step 1: Scroll sidebar DOM                  │
+│  → Collect all conversation URLs + titles    │
+├─────────────────────────────────────────────┤
+│  Step 2: For each conversation:              │
+│  → Call hNvQHb batchexecute RPC (1 request)  │
+│  → Parse complete conversation data          │
+│  → Extract user + model messages             │
+│  → Download JSON + MD immediately            │
+├─────────────────────────────────────────────┤
+│  Step 3: Generate merged output files        │
+└─────────────────────────────────────────────┘
 ```
 
----
+**Hybrid approach**: Sidebar DOM for conversation list + Gemini internal API for content. The API returns complete conversations in a single request — no scrolling or lazy-loading issues.
 
-## Method 2: Playwright Script (Legacy)
+## Output Format
 
-### Prerequisites
-
-```bash
-pip install playwright
+### Filenames
+```
+20260116_Claude Code 安装与使用指南_471c4c1d.json
+20260116_Claude Code 安装与使用指南_471c4c1d.md
+20251112_博资考综述_2e105750.json
+20260302_访学申请信_a1b96a10.json
 ```
 
-### Launch Chrome with debug port
+Format: `YYYYMMDD_title_convId8.json/md`
 
-```bash
-# Windows
-"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="C:\Users\USERNAME\chrome-debug-profile" --proxy-server="http://127.0.0.1:2080"
+### JSON Structure
+```json
+{
+  "id": "471c4c1dc69ed6ed",
+  "title": "Claude Code 安装与使用指南",
+  "messages": [
+    { "role": "user", "content": "..." },
+    { "role": "assistant", "content": "..." }
+  ],
+  "messageCount": 52,
+  "createdAt": "2026-01-16T11:07:49.000Z",
+  "lastMessageAt": "2026-01-13T12:48:12.000Z",
+  "url": "https://gemini.google.com/app/471c4c1dc69ed6ed"
+}
 ```
 
-### Run
+### Markdown Format
+```
+============================================================
+Conversation: Claude Code 安装与使用指南
+Messages: 52
+Created: 2026-01-16T11:07:49.000Z
+Last message: 2026-01-13T12:48:12.000Z
+URL: https://gemini.google.com/app/471c4c1dc69ed6ed
+============================================================
 
-```powershell
-$env:NO_PROXY = "localhost,127.0.0.1"
-python -u scripts/gemini_export_dom.py
+--- User ---
+
+How do I install Claude Code?
+
+--- Gemini ---
+
+Here's how to install Claude Code...
 ```
 
-Output goes to `gemini_export/` directory.
+## Technical Details
 
----
+| Component | Technology |
+|-----------|-----------|
+| Conversation list | Sidebar DOM scrolling (`a[href*="/app/"]`) |
+| Conversation content | `hNvQHb` batchexecute RPC with `c_` prefixed IDs |
+| Authentication | `SNlM0e` + `cfb2h` tokens from page HTML |
+| Timestamps | `turn[4][0]` Unix seconds in API response |
+| File download | Blob URLs via content script `<a download>` |
+| Resume state | `exportedIds` in `chrome.storage.local` |
 
 ## Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
-| Extension: 0 messages | Ensure sidebar is expanded before starting |
-| Extension: content script error | Refresh the Gemini tab, try again |
-| Playwright: cannot connect | Close all Chrome, relaunch with `--remote-debugging-port=9222` |
-| Proxy issues | Set `$env:NO_PROXY = "localhost,127.0.0.1"` |
+| "Failed to parse hNvQHb payload" | Rate limited — wait 5-10 min, then Resume |
+| "No conversations found" | Expand sidebar, make sure you're logged in |
+| Storage quota error | Remove & reinstall extension (needs `unlimitedStorage`) |
+| Missing Gemini responses | Update extension — model response path was `turn[3][0][0]` not `turn[3][0]` |
+
+## Credits
+
+Built with insights from these open-source projects:
+- [HanaokaYuzu/Gemini-API](https://github.com/HanaokaYuzu/Gemini-API) — Python reverse-engineered API client
+- [kandation/nebula-gripper](https://github.com/kandation/nebula-gripper) — Chrome extension for Gemini
+- [nicepkg/ctxport](https://github.com/nicepkg/ctxport) — Cross-platform AI chat exporter
 
 ## License
 
