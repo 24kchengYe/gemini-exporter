@@ -228,7 +228,7 @@ async function startExport() {
 
         conversations.push(convData);
         exportedIds.push(convId);
-        await setState({ exportedIds, skippedCount, conversations });
+        await setState({ exportedIds, skippedCount });
         sendProgress(await getState());
 
         // Delay between requests to avoid rate limiting
