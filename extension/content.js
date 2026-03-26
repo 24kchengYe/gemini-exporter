@@ -237,9 +237,9 @@
         }
       } catch (e) { /* skip */ }
 
-      // Model response: turn[3][0] = selected candidate
+      // Model response: turn[3][0][0] = selected candidate (extra nesting layer)
       try {
-        const candidate = turn[3]?.[0];
+        const candidate = turn[3]?.[0]?.[0];
         if (Array.isArray(candidate)) {
           const parts = candidate[1];
           if (Array.isArray(parts)) {
