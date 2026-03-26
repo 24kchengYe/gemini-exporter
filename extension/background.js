@@ -141,10 +141,12 @@ async function startExport() {
         return;
       }
 
-      // Convert URLs to chat list format
+      // Convert URLs to chat list format (with titles from sidebar)
+      const sidebarTitles = resp.titles || {};
       chatList = resp.urls.map(url => ({
         id: extractConvId(url),
         url,
+        sidebarTitle: sidebarTitles[url] || '',
       }));
       await setState({ chatList });
       sendLog(`Found ${chatList.length} conversations. Now fetching via API...`);
@@ -193,6 +195,10 @@ async function startExport() {
           continue;
         }
 
+        // Title priority: sidebar title > API title (first user msg) > Untitled
+        if (chat.sidebarTitle && (!convData.title || convData.title === 'Untitled')) {
+          convData.title = chat.sidebarTitle;
+        }
         const title = convData.title || 'Untitled';
         const baseName = safeName(title, convId);
         sendLog(`  "${title}" — ${convData.messages.length} msgs`);

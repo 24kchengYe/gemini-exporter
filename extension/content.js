@@ -46,14 +46,19 @@
   async function collectUrls() {
     const allLinks = () => {
       const anchors = document.querySelectorAll('a[href*="/app/"]');
-      const urls = new Set();
+      const result = new Map(); // href -> title
       anchors.forEach((a) => {
         const href = a.getAttribute('href');
         if (href && /\/app\/[a-zA-Z0-9]/.test(href) && !href.includes('SignOut')) {
-          urls.add(href);
+          if (!result.has(href)) {
+            // Try to get title from the link text or nearby element
+            var title = (a.textContent || '').trim();
+            if (!title || title.length < 2) title = '';
+            result.set(href, title);
+          }
         }
       });
-      return urls;
+      return result;
     };
 
     // Find scrollable sidebar
@@ -93,8 +98,11 @@
       scroller.scrollTop = 0;
     }
 
-    const urls = Array.from(allLinks());
-    return { urls, count: urls.length };
+    const linkMap = allLinks();
+    const urls = Array.from(linkMap.keys());
+    const titles = {};
+    linkMap.forEach(function(title, href) { titles[href] = title; });
+    return { urls, titles, count: urls.length };
   }
 
   // ---- Token extraction ----
@@ -250,13 +258,11 @@
       } catch (e) { /* skip */ }
     }
 
-    // Title
+    // Title: use first user message (Gemini API doesn't return title)
     let title = 'Untitled';
-    try {
-      if (parsed[4] && typeof parsed[4] === 'string') {
-        title = parsed[4];
-      }
-    } catch (e) { /* default */ }
+    if (messages.length > 0 && messages[0].role === 'user') {
+      title = messages[0].content.slice(0, 80).replace(/\n/g, ' ').trim();
+    }
 
     return {
       id: convId,
