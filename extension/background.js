@@ -426,8 +426,8 @@ async function startMyStuffExport() {
     for (const doc of docs) {
       const name = safeName(doc.title, '');
       const docMd = `# ${doc.title}\n\n**Date:** ${doc.date || 'Unknown'}\n\n${doc.preview}\n`;
-      files['mystuff/docs/' + name + '.md'] = docMd;
-      files['mystuff/docs/' + name + '.json'] = JSON.stringify(doc, null, 2);
+      files['mystuff_docs_' + name + '.md'] = docMd;
+      files['mystuff_docs_' + name + '.json'] = JSON.stringify(doc, null, 2);
     }
 
     // Export media URLs
@@ -438,7 +438,7 @@ async function startMyStuffExport() {
         fullSize: m.fullSize,
         alt: m.alt,
       }));
-      files['mystuff/media/_media_index.json'] = JSON.stringify(mediaIndex, null, 2);
+      files['mystuff_media_index.json'] = JSON.stringify(mediaIndex, null, 2);
 
       let mediaMd = '# Gemini Media Export\n\nTotal: ' + media.length + ' images\n\n';
       media.forEach(function(m, i) {
@@ -446,11 +446,11 @@ async function startMyStuffExport() {
         mediaMd += '- Full size: ' + m.fullSize + '\n';
         mediaMd += '- Thumbnail: ' + m.thumbnail + '\n\n';
       });
-      files['mystuff/media/_media_index.md'] = mediaMd;
+      files['mystuff_media_index.md'] = mediaMd;
     }
 
     // Merged summary
-    files['mystuff/_mystuff_summary.json'] = JSON.stringify({
+    files['mystuff__mystuff_summary.json'] = JSON.stringify({
       documents: docs,
       mediaCount: media.length,
       exportedAt: new Date().toISOString(),
@@ -466,7 +466,7 @@ async function startMyStuffExport() {
       summaryMd += '*' + (doc.date || 'Unknown date') + '*\n\n';
       summaryMd += doc.preview + '\n\n---\n\n';
     }
-    files['mystuff/_mystuff_summary.md'] = summaryMd;
+    files['mystuff__mystuff_summary.md'] = summaryMd;
 
     sendLog('Downloading ' + Object.keys(files).length + ' files...');
     await sendToContent(tabId, { action: 'downloadFiles', files });
