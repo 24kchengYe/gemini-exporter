@@ -4,12 +4,13 @@
 // ============================================================
 
 (function () {
-  if (window.__geminiExporterInjected) return;
-  window.__geminiExporterInjected = true;
+  // Always re-register message handler (allows code updates without page reload)
+  // Remove old listener if exists
+  if (window.__geminiExporterListener) {
+    try { chrome.runtime.onMessage.removeListener(window.__geminiExporterListener); } catch(e) {}
+  }
 
-  // ---- Message handler ----
-
-  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  function messageHandler(msg, sender, sendResponse) {
     if (msg.action === 'collectUrls') {
       collectUrls()
         .then((result) => sendResponse(result))
@@ -35,7 +36,10 @@
       sendResponse({ ok: true });
       return false;
     }
-  });
+  }
+
+  window.__geminiExporterListener = messageHandler;
+  chrome.runtime.onMessage.addListener(messageHandler);
 
   // ---- Sidebar URL collection (DOM) ----
 
@@ -162,62 +166,39 @@
   }
 
   function parseConversationResponse(rawText, convId) {
-    // The hNvQHb payload is a JSON string embedded inside the wrb.fr array.
-    // Format: ["wrb.fr","hNvQHb","<escaped_json_payload>","generic"]
-    // The payload itself is a JSON-escaped string that we need to unescape and parse.
-
-    // Step 1: Find the payload start after "wrb.fr","hNvQHb","
+    // Find the wrb.fr marker
     const marker = '"wrb.fr","hNvQHb","';
     const idx = rawText.indexOf(marker);
     if (idx < 0) return { error: 'No hNvQHb data in response', messages: [] };
-    const payloadStart = idx + marker.length;
 
-    // Step 2: The payload is embedded in outer JSON as ["wrb.fr","hNvQHb","PAYLOAD","generic"]
-    // So we extract by wrapping it: parse the surrounding array from ["wrb.fr"...
-    // Find the start of the outer array containing this wrb.fr
+    // Find the [ before the marker
     let bracketStart = idx;
     while (bracketStart > 0 && rawText[bracketStart] !== '[') bracketStart--;
 
-    // Find the matching end — look for ,"generic"] after the payload
-    // Search for the pattern: ","generic"] which closes this entry
-    const genericMarker = ',"generic"';
-    let searchPos = payloadStart;
-    let genericIdx = -1;
+    // Search for ,"generic"] closings and try to parse
+    // This is the same approach that worked in the Snippet test
+    var searchPos = idx + marker.length;
+    for (var attempt = 0; attempt < 50; attempt++) {
+      var gi = rawText.indexOf(',"generic"', searchPos);
+      if (gi < 0) break;
 
-    // Find ","generic" that is NOT inside the escaped payload string
-    // The payload string ends at an unescaped quote before ,"generic"
-    while (searchPos < rawText.length) {
-      const gIdx = rawText.indexOf(genericMarker, searchPos);
-      if (gIdx < 0) break;
-
-      // Check that the quote before ","generic" is the closing quote of the payload
-      // by verifying it's preceded by an even number of backslashes (unescaped quote)
-      let backslashes = 0;
-      let checkPos = gIdx - 1;
-      while (checkPos >= 0 && rawText[checkPos] === '\\') { backslashes++; checkPos--; }
-
-      if (backslashes % 2 === 0 && rawText[gIdx - 1] === '"') {
-        // This could be our closing. But we need to verify it's not inside escaped content.
-        // Try to parse the wrb.fr array from bracketStart to after "]"
-        const closeBracket = rawText.indexOf(']', gIdx + genericMarker.length);
-        if (closeBracket >= 0) {
-          const outerStr = rawText.substring(bracketStart, closeBracket + 1);
-          try {
-            const outerArr = JSON.parse(outerStr);
-            // outerArr should be ["wrb.fr","hNvQHb","<payload_json_string>","generic"]
-            if (outerArr[0] === 'wrb.fr' && outerArr[1] === 'hNvQHb' && typeof outerArr[2] === 'string') {
-              const parsed = JSON.parse(outerArr[2]);
-              return extractMessagesFromParsed(parsed, convId);
-            }
-          } catch (e) {
-            // Not the right closing, keep searching
+      var cb = rawText.indexOf(']', gi + 10);
+      if (cb >= 0) {
+        var candidate = rawText.substring(bracketStart, cb + 1);
+        try {
+          var arr = JSON.parse(candidate);
+          if (arr[0] === 'wrb.fr' && arr[1] === 'hNvQHb' && typeof arr[2] === 'string') {
+            var parsed = JSON.parse(arr[2]);
+            return extractMessagesFromParsed(parsed, convId);
           }
+        } catch (e) {
+          // Not the right closing, keep searching
         }
       }
-      searchPos = gIdx + 1;
+      searchPos = gi + 1;
     }
 
-    return { error: 'Failed to parse hNvQHb payload', messages: [] };
+    return { error: 'Failed to parse hNvQHb payload after ' + attempt + ' attempts', messages: [] };
   }
 
   function extractMessagesFromParsed(parsed, convId) {
