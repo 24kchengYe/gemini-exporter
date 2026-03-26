@@ -1,6 +1,6 @@
 // ============================================================
 // Gemini Conversation Exporter - Background Service Worker
-// Uses internal API via content script — no navigation needed
+// Hybrid: sidebar DOM for list + batchexecute API for content
 // ============================================================
 
 let geminiTabId = null;
@@ -23,6 +23,11 @@ function safeName(title, convId) {
   const safe = title.replace(/[\\/:*?"<>|\n\r\t]/g, '_').replace(/\s+/g, ' ').slice(0, 60).trim() || 'untitled';
   const idSuffix = convId ? '_' + convId.slice(0, 8) : '';
   return safe + idSuffix;
+}
+
+function extractConvId(url) {
+  const match = url.match(/\/app\/([a-zA-Z0-9_-]+)/);
+  return match ? match[1] : url.replace(/[^a-zA-Z0-9]/g, '').slice(-12);
 }
 
 async function getState() {
@@ -49,11 +54,11 @@ async function ensureGeminiTab() {
   const tabs = await chrome.tabs.query({ url: 'https://gemini.google.com/*' });
   if (tabs.length > 0) {
     geminiTabId = tabs[0].id;
+    await chrome.tabs.update(geminiTabId, { active: true });
     return geminiTabId;
   }
-  const tab = await chrome.tabs.create({ url: 'https://gemini.google.com/app', active: false });
+  const tab = await chrome.tabs.create({ url: 'https://gemini.google.com/app', active: true });
   geminiTabId = tab.id;
-  // Wait for load
   await new Promise((resolve) => {
     function listener(id, info) {
       if (id === tab.id && info.status === 'complete') {
@@ -64,7 +69,7 @@ async function ensureGeminiTab() {
     chrome.tabs.onUpdated.addListener(listener);
     setTimeout(resolve, 15000);
   });
-  await sleep(2000);
+  await sleep(3000);
   return geminiTabId;
 }
 
@@ -116,34 +121,38 @@ async function startExport() {
     const tabId = await ensureGeminiTab();
     sendLog('Connected to Gemini tab.');
 
-    // Step 1: Get conversation list via API
+    // Step 1: Get conversation list from sidebar DOM (or resume)
     let chatList = state.chatList || [];
     let exportedIds = state.exportedIds || [];
     let conversations = state.conversations || [];
 
     if (chatList.length === 0) {
-      sendLog('Fetching conversation list via API...');
+      sendLog('Scrolling sidebar to collect conversations...');
 
-      const resp = await sendToContent(tabId, { action: 'apiListConversations', pageSize: 50 });
+      const resp = await sendToContent(tabId, { action: 'collectUrls' });
       if (resp?.error) {
         sendLog(`Error: ${resp.error}`);
         await setState({ running: false });
         return;
       }
-      if (!resp?.conversations || resp.conversations.length === 0) {
-        sendLog('No conversations found.');
+      if (!resp?.urls || resp.urls.length === 0) {
+        sendLog('No conversations found in sidebar.');
         await setState({ running: false });
         return;
       }
 
-      chatList = resp.conversations;
+      // Convert URLs to chat list format
+      chatList = resp.urls.map(url => ({
+        id: extractConvId(url),
+        url,
+      }));
       await setState({ chatList });
-      sendLog(`Found ${chatList.length} conversations via API.`);
+      sendLog(`Found ${chatList.length} conversations. Now fetching via API...`);
     } else {
-      sendLog(`Resuming: ${chatList.length} total, ${exportedIds.length} already exported.`);
+      sendLog(`Resuming: ${chatList.length} total, ${exportedIds.length} done.`);
     }
 
-    // Step 2: Export each conversation via API (no navigation!)
+    // Step 2: Fetch each conversation via API (no navigation!)
     let skippedCount = state.skippedCount || 0;
 
     for (let i = 0; i < chatList.length; i++) {
@@ -160,9 +169,9 @@ async function startExport() {
         continue;
       }
 
-      sendLog(`(${i + 1}/${chatList.length}) "${chat.title}"...`);
+      sendLog(`(${i + 1}/${chatList.length}) Fetching ${convId.slice(0, 8)}...`);
       await setState({
-        currentTitle: `${chat.title} (${i + 1}/${chatList.length})`,
+        currentTitle: `(${i + 1}/${chatList.length}) Loading...`,
         skippedCount,
       });
       sendProgress(await getState());
@@ -178,20 +187,16 @@ async function startExport() {
         }
 
         if (!convData?.messages || convData.messages.length === 0) {
-          sendLog(`  Skipped (no messages)`);
+          sendLog(`  Skipped (empty)`);
           skippedCount++;
           await setState({ skippedCount });
           continue;
         }
 
-        // Use title from list if API didn't return one
-        if (convData.title === 'Untitled' && chat.title !== 'Untitled') {
-          convData.title = chat.title;
-        }
-        convData.url = `https://gemini.google.com/app/${convId}`;
-
-        const baseName = safeName(convData.title, convId);
-        sendLog(`  ${convData.messages.length} msgs → ${baseName}`);
+        const title = convData.title || 'Untitled';
+        const baseName = safeName(title, convId);
+        sendLog(`  "${title}" — ${convData.messages.length} msgs`);
+        await setState({ currentTitle: title });
 
         // Download immediately
         const jsonContent = JSON.stringify(convData, null, 2);
@@ -209,8 +214,8 @@ async function startExport() {
         await setState({ exportedIds, skippedCount, conversations });
         sendProgress(await getState());
 
-        // Small delay to avoid rate limiting
-        await sleep(500);
+        // Small delay to be polite
+        await sleep(300);
       } catch (err) {
         sendLog(`  Error: ${err.message.slice(0, 80)}`);
         skippedCount++;
@@ -277,10 +282,9 @@ async function downloadSavedData() {
   const state = await getState();
   const conversations = state.conversations || [];
   if (conversations.length === 0) {
-    sendLog('No saved data to download.');
+    sendLog('No saved data.');
     return;
   }
-
   const tabId = await ensureGeminiTab();
   await sleep(500);
 
@@ -291,11 +295,9 @@ async function downloadSavedData() {
     files[`${name}.md`] = conversationToMarkdown(conv);
   }
   files['_all_conversations.json'] = JSON.stringify(conversations, null, 2);
-  let mergedMd = `# Gemini Conversations Export\n\nTotal: ${conversations.length}\nDate: ${new Date().toISOString()}\n\n`;
-  for (const conv of conversations) {
-    mergedMd += conversationToMarkdown(conv) + '\n\n';
-  }
-  files['_all_conversations.md'] = mergedMd;
+  let md = `# Gemini Export\n\nTotal: ${conversations.length}\n\n`;
+  for (const conv of conversations) md += conversationToMarkdown(conv) + '\n\n';
+  files['_all_conversations.md'] = md;
 
   try {
     await sendToContent(tabId, { action: 'downloadFiles', files });
