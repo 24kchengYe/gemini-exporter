@@ -97,12 +97,21 @@ async function sendToContent(tabId, message) {
 
 function conversationToMarkdown(conv) {
   const sep = '============================================================';
-  let md = `${sep}\nConversation: ${conv.title}\nMessages: ${conv.messageCount || conv.messages.length}\nURL: ${conv.url || ''}\n${sep}\n\n`;
+  let header = `${sep}\nConversation: ${conv.title}\nMessages: ${conv.messageCount || conv.messages.length}`;
+  if (conv.createdAt) header += `\nCreated: ${conv.createdAt}`;
+  if (conv.lastMessageAt) header += `\nLast message: ${conv.lastMessageAt}`;
+  header += `\nURL: ${conv.url || ''}\n${sep}\n\n`;
+  let md = header;
   for (const msg of conv.messages) {
     const label = msg.role === 'user' ? '--- User ---' : '--- Gemini ---';
     md += `${label}\n\n${msg.content}\n\n`;
   }
   return md;
+}
+
+function datePrefix(isoStr) {
+  if (!isoStr) return '';
+  return isoStr.slice(0, 10).replace(/-/g, ''); // "20260116"
 }
 
 // ---- Main export flow ----
@@ -196,11 +205,13 @@ async function startExport() {
         }
 
         // Title priority: sidebar title > API title (first user msg) > Untitled
-        if (chat.sidebarTitle && (!convData.title || convData.title === 'Untitled')) {
+        if (chat.sidebarTitle) {
           convData.title = chat.sidebarTitle;
         }
         const title = convData.title || 'Untitled';
-        const baseName = safeName(title, convId);
+        // Filename: date_title_id
+        const dp = datePrefix(convData.createdAt);
+        const baseName = (dp ? dp + '_' : '') + safeName(title, convId);
         sendLog(`  "${title}" — ${convData.messages.length} msgs`);
         await setState({ currentTitle: title });
 

@@ -51,20 +51,9 @@
         const href = a.getAttribute('href');
         if (href && /\/app\/[a-zA-Z0-9]/.test(href) && !href.includes('SignOut')) {
           if (!result.has(href)) {
-            // Get title: try innerText, aria-label, or child elements
-            var title = '';
-            // Try aria-label first
-            if (a.getAttribute('aria-label')) title = a.getAttribute('aria-label').trim();
-            // Try direct text content
-            if (!title) title = (a.innerText || '').replace(/\n/g, ' ').trim();
-            // Try first child with text
-            if (!title || title.length < 2) {
-              var spans = a.querySelectorAll('span, div, p');
-              for (var s = 0; s < spans.length; s++) {
-                var st = (spans[s].innerText || '').trim();
-                if (st.length > 2) { title = st; break; }
-              }
-            }
+            // Get title from innerText, strip "Pinned chat" / "Shared" suffixes
+            var rawText = (a.innerText || '').trim();
+            var title = rawText.split('\n')[0].trim();  // first line only
             if (title.length < 2) title = '';
             result.set(href, title);
           }
@@ -270,11 +259,25 @@
       } catch (e) { /* skip */ }
     }
 
-    // Title: use first user message (Gemini API doesn't return title)
+    // Title: use first user message
     let title = 'Untitled';
     if (messages.length > 0 && messages[0].role === 'user') {
       title = messages[0].content.slice(0, 80).replace(/\n/g, ' ').trim();
     }
+
+    // Timestamps from turn[4][0] (Unix seconds)
+    let createdAt = null;
+    let lastMessageAt = null;
+    try {
+      var firstTurn = turns[0];
+      if (firstTurn && firstTurn[4] && firstTurn[4][0]) {
+        createdAt = new Date(firstTurn[4][0] * 1000).toISOString();
+      }
+      var lastTurn = turns[turns.length - 1];
+      if (lastTurn && lastTurn[4] && lastTurn[4][0]) {
+        lastMessageAt = new Date(lastTurn[4][0] * 1000).toISOString();
+      }
+    } catch (e) { /* skip */ }
 
     return {
       id: convId,
@@ -282,6 +285,8 @@
       messages,
       messageCount: messages.length,
       url: `https://gemini.google.com/app/${convId}`,
+      createdAt,
+      lastMessageAt,
       exportedAt: new Date().toISOString(),
     };
   }
