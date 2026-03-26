@@ -51,9 +51,21 @@
         const href = a.getAttribute('href');
         if (href && /\/app\/[a-zA-Z0-9]/.test(href) && !href.includes('SignOut')) {
           if (!result.has(href)) {
-            // Try to get title from the link text or nearby element
-            var title = (a.textContent || '').trim();
-            if (!title || title.length < 2) title = '';
+            // Get title: try innerText, aria-label, or child elements
+            var title = '';
+            // Try aria-label first
+            if (a.getAttribute('aria-label')) title = a.getAttribute('aria-label').trim();
+            // Try direct text content
+            if (!title) title = (a.innerText || '').replace(/\n/g, ' ').trim();
+            // Try first child with text
+            if (!title || title.length < 2) {
+              var spans = a.querySelectorAll('span, div, p');
+              for (var s = 0; s < spans.length; s++) {
+                var st = (spans[s].innerText || '').trim();
+                if (st.length > 2) { title = st; break; }
+              }
+            }
+            if (title.length < 2) title = '';
             result.set(href, title);
           }
         }
