@@ -4,6 +4,7 @@
   const startBtn = $('#startBtn');
   const cancelBtn = $('#cancelBtn');
   const resetBtn = $('#resetBtn');
+  const downloadBtn = $('#downloadBtn');
   const logArea = $('#logArea');
   const progressSection = $('#progressSection');
   const progressBar = $('#progressBar');
@@ -26,6 +27,13 @@
     exportedCount.textContent = exported;
     totalCount.textContent = total || '—';
     skippedCount.textContent = skipped;
+
+    // Show download button if we have saved data
+    if (exported > 0 && !state.running) {
+      downloadBtn.style.display = 'flex';
+    } else {
+      downloadBtn.style.display = 'none';
+    }
 
     if (state.running) {
       startBtn.style.display = 'none';
@@ -101,6 +109,11 @@
     log('Cancelling...');
     chrome.storage.local.set({ cancelled: true });
     chrome.runtime.sendMessage({ action: 'cancelExport' });
+  });
+
+  downloadBtn.addEventListener('click', () => {
+    log('Triggering download of saved data...');
+    chrome.runtime.sendMessage({ action: 'downloadSaved' });
   });
 
   resetBtn.addEventListener('click', () => {

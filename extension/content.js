@@ -168,7 +168,43 @@
       });
     }
 
-    const title = document.title.replace(/\s*[-–—]\s*Google Gemini\s*$/i, '').trim() || 'Untitled';
+    // Title extraction: try multiple strategies
+    let title = '';
+
+    // Strategy 1: Try to find the conversation title element in the page
+    const titleCandidates = [
+      'h1.conversation-title',
+      '[class*="conversation-title"]',
+      '[class*="chat-title"]',
+      'h1',
+    ];
+    for (const sel of titleCandidates) {
+      const el = document.querySelector(sel);
+      if (el) {
+        const t = el.innerText.trim();
+        if (t && t !== 'Google Gemini' && t !== 'Gemini' && t.length > 1) {
+          title = t;
+          break;
+        }
+      }
+    }
+
+    // Strategy 2: Use document.title but strip "Google Gemini" variations
+    if (!title) {
+      title = document.title
+        .replace(/^Google Gemini\s*[-–—:]\s*/i, '')  // "Google Gemini - XXX" -> "XXX"
+        .replace(/\s*[-–—:]\s*Google Gemini\s*$/i, '')  // "XXX - Google Gemini" -> "XXX"
+        .trim();
+      // If title is still just "Google Gemini" or empty, try first user message
+      if (!title || /^Google\s*Gemini$/i.test(title)) {
+        const firstUser = document.querySelector('.query-text, [class*="query-text"]');
+        if (firstUser) {
+          title = firstUser.innerText.replace(/^(You said|You)\s*\n*/i, '').trim().slice(0, 80);
+        }
+      }
+    }
+
+    if (!title) title = 'Untitled';
 
     return {
       title,
@@ -271,9 +307,45 @@
       return true; // async response
     }
 
+    if (msg.action === 'downloadFiles') {
+      downloadFilesAsBlobs(msg.files)
+        .then((result) => sendResponse(result))
+        .catch((err) => sendResponse({ error: err.message }));
+      return true;
+    }
+
     if (msg.action === 'ping') {
       sendResponse({ ok: true });
       return false;
     }
   });
+
+  // ---- File download via Blob URLs ----
+
+  async function downloadFilesAsBlobs(files) {
+    const filenames = Object.keys(files);
+    let downloaded = 0;
+
+    for (const filename of filenames) {
+      const content = files[filename];
+      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+
+      // Small delay to avoid browser throttling rapid downloads
+      await new Promise((r) => setTimeout(r, 100));
+
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      downloaded++;
+    }
+
+    return { downloaded, total: filenames.length };
+  }
 })();

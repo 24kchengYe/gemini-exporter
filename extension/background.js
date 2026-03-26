@@ -23,41 +23,20 @@ function randomDelay(minMs, maxMs) {
 }
 
 function safeName(title, convId) {
-  const safe = title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 60).trim() || 'untitled';
+  const safe = title.replace(/[\\/:*?"<>|\n\r\t]/g, '_').replace(/\s+/g, ' ').slice(0, 60).trim() || 'untitled';
   const idSuffix = convId ? '_' + convId.slice(0, 8) : '';
   return safe + idSuffix;
 }
 
 function extractConvId(url) {
-  // URL like /app/abc123def or full URL
   const match = url.match(/\/app\/([a-zA-Z0-9_-]+)/);
   return match ? match[1] : url.replace(/[^a-zA-Z0-9]/g, '').slice(-12);
-}
-
-function makeDataUrl(content, mimeType) {
-  return `data:${mimeType};charset=utf-8,` + encodeURIComponent(content);
-}
-
-function downloadFile(content, filename, mimeType) {
-  return new Promise((resolve, reject) => {
-    const url = makeDataUrl(content, mimeType);
-    chrome.downloads.download(
-      { url, filename, conflictAction: 'uniquify', saveAs: false },
-      (downloadId) => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-        } else {
-          resolve(downloadId);
-        }
-      }
-    );
-  });
 }
 
 async function getState() {
   return new Promise((resolve) => {
     chrome.storage.local.get(
-      ['exportedIds', 'urlList', 'running', 'cancelled', 'skippedCount', 'currentTitle', 'completed'],
+      ['exportedIds', 'urlList', 'running', 'cancelled', 'skippedCount', 'currentTitle', 'completed', 'conversations'],
       resolve
     );
   });
@@ -75,7 +54,6 @@ async function isCancelled() {
 // ---- Tab management ----
 
 async function ensureGeminiTab() {
-  // Try to find an existing Gemini tab
   const tabs = await chrome.tabs.query({ url: 'https://gemini.google.com/*' });
   if (tabs.length > 0) {
     geminiTabId = tabs[0].id;
@@ -83,7 +61,6 @@ async function ensureGeminiTab() {
     sendLog('Using existing Gemini tab.');
     return geminiTabId;
   }
-  // Create new tab
   const tab = await chrome.tabs.create({ url: 'https://gemini.google.com/app', active: true });
   geminiTabId = tab.id;
   await waitForTabLoad(geminiTabId);
@@ -93,9 +70,15 @@ async function ensureGeminiTab() {
 }
 
 function waitForTabLoad(tabId) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      resolve(); // resolve anyway after timeout
+    }, 30000);
+
     function listener(updatedTabId, changeInfo) {
       if (updatedTabId === tabId && changeInfo.status === 'complete') {
+        clearTimeout(timeout);
         chrome.tabs.onUpdated.removeListener(listener);
         resolve();
       }
@@ -108,20 +91,19 @@ async function navigateAndWait(tabId, url) {
   const loadPromise = waitForTabLoad(tabId);
   await chrome.tabs.update(tabId, { url });
   await loadPromise;
-  await sleep(3000); // wait for dynamic content
+  await sleep(3000);
 }
 
 // ---- Content script messaging ----
 
 async function sendToContent(tabId, message) {
-  // Ensure content script is injected
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
       files: ['content.js'],
     });
   } catch (e) {
-    // Content script might already be there, ignore
+    // Content script might already be there
   }
   await sleep(500);
 
@@ -142,7 +124,7 @@ function conversationToMarkdown(conv) {
   const sep = '============================================================';
   let md = `${sep}\nConversation: ${conv.title}\nMessages: ${conv.messages.length}\nURL: ${conv.url}\n${sep}\n\n`;
   for (const msg of conv.messages) {
-    const label = msg.role === 'user' ? '--- User ---' : '--- Gemini ---';  // keep display label as Gemini
+    const label = msg.role === 'user' ? '--- User ---' : '--- Gemini ---';
     md += `${label}\n\n${msg.content}\n\n`;
   }
   return md;
@@ -153,7 +135,6 @@ function conversationToMarkdown(conv) {
 async function startExport() {
   const state = await getState();
 
-  // If already running, bail
   if (state.running) {
     sendLog('Export already in progress.');
     return;
@@ -164,14 +145,13 @@ async function startExport() {
   try {
     const tabId = await ensureGeminiTab();
 
-    // Step 1: Collect URLs (unless we already have them from a previous run)
+    // Step 1: Collect URLs
     let urlList = state.urlList || [];
     let exportedIds = state.exportedIds || [];
+    let conversations = state.conversations || [];
 
     if (urlList.length === 0) {
       sendLog('Collecting conversation URLs from sidebar...');
-
-      // Navigate to main page to see sidebar
       await navigateAndWait(tabId, 'https://gemini.google.com/app');
       await sleep(2000);
 
@@ -189,9 +169,8 @@ async function startExport() {
       sendLog(`Resuming with ${urlList.length} URLs, ${exportedIds.length} already exported.`);
     }
 
-    // Step 2: Export each conversation
+    // Step 2: Export each conversation (store data in memory, not download yet)
     let skippedCount = state.skippedCount || 0;
-    const allConversations = [];
 
     for (let i = 0; i < urlList.length; i++) {
       if (await isCancelled()) {
@@ -202,7 +181,6 @@ async function startExport() {
       const url = urlList[i];
       const convId = extractConvId(url);
 
-      // Skip if already exported
       if (exportedIds.includes(convId)) {
         skippedCount++;
         continue;
@@ -210,7 +188,7 @@ async function startExport() {
 
       const fullUrl = url.startsWith('http') ? url : `https://gemini.google.com${url}`;
 
-      sendLog(`Exporting (${i + 1}/${urlList.length}): navigating...`);
+      sendLog(`(${i + 1}/${urlList.length}) Navigating...`);
       await setState({
         currentTitle: `Loading... (${i + 1}/${urlList.length})`,
         skippedCount,
@@ -224,7 +202,7 @@ async function startExport() {
         const convData = await sendToContent(tabId, { action: 'extractConversation', url: fullUrl });
 
         if (!convData || !convData.messages || convData.messages.length === 0) {
-          sendLog(`  Skipped (no messages found): ${fullUrl}`);
+          sendLog(`  Skipped (no messages): ${convId.slice(0, 8)}`);
           skippedCount++;
           await setState({ skippedCount });
           sendProgress(await getState());
@@ -233,29 +211,27 @@ async function startExport() {
 
         const title = convData.title || 'Untitled';
         const baseName = safeName(title, convId);
+        convData.id = convId;
+        convData.baseName = baseName;
 
-        sendLog(`  "${title}" - ${convData.messages.length} messages`);
+        sendLog(`  "${title}" - ${convData.messages.length} msgs`);
         await setState({ currentTitle: title });
 
-        // Save individual JSON
-        const jsonContent = JSON.stringify(convData, null, 2);
-        await downloadFile(jsonContent, `gemini-export/${baseName}.json`, 'application/json');
-
-        // Save individual MD
-        const mdContent = conversationToMarkdown(convData);
-        await downloadFile(mdContent, `gemini-export/${baseName}.md`, 'text/markdown');
-
-        allConversations.push(convData);
-
-        // Mark as exported
+        // Store conversation data in storage (not download yet)
+        conversations.push(convData);
         exportedIds.push(convId);
-        await setState({ exportedIds, skippedCount });
+
+        // Save periodically (every 5 conversations) to avoid losing progress
+        if (conversations.length % 5 === 0) {
+          await setState({ conversations, exportedIds, skippedCount });
+        } else {
+          await setState({ exportedIds, skippedCount });
+        }
         sendProgress(await getState());
 
-        // Random delay between conversations
         await randomDelay(3000, 6000);
       } catch (err) {
-        sendLog(`  Error on ${fullUrl}: ${err.message}`);
+        sendLog(`  Error: ${err.message.slice(0, 80)}`);
         skippedCount++;
         await setState({ skippedCount });
         sendProgress(await getState());
@@ -263,31 +239,55 @@ async function startExport() {
       }
     }
 
-    // Step 3: Generate merged files
-    if (allConversations.length > 0 && !(await isCancelled())) {
-      sendLog('Generating merged files...');
+    // Save all conversations to storage
+    await setState({ conversations, skippedCount });
 
-      const mergedJson = JSON.stringify(allConversations, null, 2);
-      await downloadFile(mergedJson, 'gemini-export/_all_conversations.json', 'application/json');
+    // Step 3: Trigger download via content script (it has DOM access for Blob URLs)
+    if (conversations.length > 0 && !(await isCancelled())) {
+      sendLog(`Preparing download package (${conversations.length} conversations)...`);
 
-      let mergedMd = `# Gemini Conversations Export\n\nTotal: ${allConversations.length} conversations\nDate: ${new Date().toISOString()}\n\n`;
-      for (const conv of allConversations) {
+      // Build the files object to send to content script for download
+      const files = {};
+
+      for (const conv of conversations) {
+        const name = conv.baseName || safeName(conv.title || 'Untitled', conv.id);
+        files[`${name}.json`] = JSON.stringify(conv, null, 2);
+        files[`${name}.md`] = conversationToMarkdown(conv);
+      }
+
+      // Merged files
+      files['_all_conversations.json'] = JSON.stringify(conversations, null, 2);
+
+      let mergedMd = `# Gemini Conversations Export\n\nTotal: ${conversations.length} conversations\nDate: ${new Date().toISOString()}\n\n`;
+      for (const conv of conversations) {
         mergedMd += conversationToMarkdown(conv) + '\n\n';
       }
-      await downloadFile(mergedMd, 'gemini-export/_all_conversations.md', 'text/markdown');
+      files['_all_conversations.md'] = mergedMd;
 
-      sendLog(`Merged files saved (${allConversations.length} conversations).`);
+      // URL index
+      files['_urls_index.json'] = JSON.stringify(urlList, null, 2);
+
+      // Navigate to Gemini page (need content script context)
+      await navigateAndWait(tabId, 'https://gemini.google.com/app');
+      await sleep(1000);
+
+      // Send files to content script to trigger downloads via Blob URLs
+      try {
+        await sendToContent(tabId, { action: 'downloadFiles', files });
+        sendLog('All files downloaded to gemini-export/ folder.');
+      } catch (err) {
+        sendLog(`Download error: ${err.message}. Data is saved in extension storage - try "Download Data" button.`);
+      }
     }
 
-    const finalState = {
+    await setState({
       running: false,
       completed: true,
       currentTitle: '',
-    };
-    await setState(finalState);
+    });
     const s = await getState();
     chrome.runtime.sendMessage({ type: 'done', state: s }).catch(() => {});
-    sendLog(`Export finished. ${exportedIds.length} exported, ${skippedCount} skipped.`);
+    sendLog(`Done! ${exportedIds.length} exported, ${skippedCount} skipped.`);
   } catch (err) {
     sendLog(`Fatal error: ${err.message}`);
     chrome.runtime.sendMessage({ type: 'error', text: err.message }).catch(() => {});
@@ -304,6 +304,48 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   } else if (msg.action === 'cancelExport') {
     setState({ cancelled: true, running: false });
     sendResponse({ ok: true });
+  } else if (msg.action === 'resetExport') {
+    chrome.storage.local.remove(
+      ['exportedIds', 'urlList', 'skippedCount', 'currentTitle', 'running', 'completed', 'cancelled', 'conversations'],
+      () => sendResponse({ ok: true })
+    );
+  } else if (msg.action === 'downloadSaved') {
+    // Re-trigger download of saved data
+    downloadSavedData();
+    sendResponse({ ok: true });
   }
-  return true; // keep channel open for async
+  return true;
 });
+
+async function downloadSavedData() {
+  const state = await getState();
+  const conversations = state.conversations || [];
+  if (conversations.length === 0) {
+    sendLog('No saved data to download.');
+    return;
+  }
+
+  const tabId = await ensureGeminiTab();
+  await sleep(1000);
+
+  const files = {};
+  for (const conv of conversations) {
+    const name = conv.baseName || safeName(conv.title || 'Untitled', conv.id);
+    files[`${name}.json`] = JSON.stringify(conv, null, 2);
+    files[`${name}.md`] = conversationToMarkdown(conv);
+  }
+  files['_all_conversations.json'] = JSON.stringify(conversations, null, 2);
+  let mergedMd = `# Gemini Conversations Export\n\nTotal: ${conversations.length}\nDate: ${new Date().toISOString()}\n\n`;
+  for (const conv of conversations) {
+    mergedMd += conversationToMarkdown(conv) + '\n\n';
+  }
+  files['_all_conversations.md'] = mergedMd;
+  files['_urls_index.json'] = JSON.stringify(state.urlList || [], null, 2);
+
+  try {
+    await sendToContent(tabId, { action: 'downloadFiles', files });
+    sendLog(`Downloaded ${conversations.length} conversations.`);
+  } catch (err) {
+    sendLog(`Download error: ${err.message}`);
+  }
+}
