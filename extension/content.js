@@ -270,22 +270,32 @@
     const scroller = findConvScroller();
     if (!scroller) return;
 
-    // Scroll to top in steps, waiting for lazy-loaded content
-    let attempts = 0;
-    const maxAttempts = 60;
+    // Repeatedly scroll to top and wait for lazy-loaded content
+    // Gemini loads more messages as you scroll up, increasing scrollHeight
+    let prevHeight = scroller.scrollHeight;
+    let stableRounds = 0;
+    const maxStableRounds = 5; // stop after 5 rounds with no new content
+    const maxAttempts = 120;   // safety limit for very long conversations
 
-    while (attempts < maxAttempts) {
+    for (let i = 0; i < maxAttempts; i++) {
+      // Scroll to very top
       scroller.scrollTop = 0;
-      await new Promise((r) => setTimeout(r, 1000));
-      if (scroller.scrollTop <= 5) break;
-      attempts++;
+      await new Promise((r) => setTimeout(r, 1500));
+
+      const newHeight = scroller.scrollHeight;
+      if (newHeight > prevHeight) {
+        // New content loaded — reset stable counter
+        prevHeight = newHeight;
+        stableRounds = 0;
+      } else {
+        stableRounds++;
+        if (stableRounds >= maxStableRounds) break;
+      }
     }
 
-    // Scroll back to bottom to ensure everything is rendered
+    // Final: scroll to very bottom then back to top to ensure full render
     scroller.scrollTop = scroller.scrollHeight;
     await new Promise((r) => setTimeout(r, 1000));
-
-    // Scroll to top one more time
     scroller.scrollTop = 0;
     await new Promise((r) => setTimeout(r, 500));
   }
