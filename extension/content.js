@@ -160,76 +160,67 @@
   }
 
   function parseConversationResponse(rawText, convId) {
-    // Strategy: parse the entire response frame, not just the payload string
-    // The response has format: )]}'\n<len>\n<json_array>\n<len>\n...
-    // We parse each frame and look for the wrb.fr entry
+    // The hNvQHb payload is a JSON string embedded inside the wrb.fr array.
+    // Format: ["wrb.fr","hNvQHb","<escaped_json_payload>","generic"]
+    // The payload itself is a JSON-escaped string that we need to unescape and parse.
 
-    let text = rawText;
-    if (text.startsWith(")]}'")) {
-      text = text.substring(text.indexOf('\n') + 1);
-    }
+    // Step 1: Find the payload start after "wrb.fr","hNvQHb","
+    const marker = '"wrb.fr","hNvQHb","';
+    const idx = rawText.indexOf(marker);
+    if (idx < 0) return { error: 'No hNvQHb data in response', messages: [] };
+    const payloadStart = idx + marker.length;
 
-    let parsed = null;
+    // Step 2: The payload is embedded in outer JSON as ["wrb.fr","hNvQHb","PAYLOAD","generic"]
+    // So we extract by wrapping it: parse the surrounding array from ["wrb.fr"...
+    // Find the start of the outer array containing this wrb.fr
+    let bracketStart = idx;
+    while (bracketStart > 0 && rawText[bracketStart] !== '[') bracketStart--;
 
-    // Try parsing each length-prefixed frame
-    let pos = 0;
-    while (pos < text.length && !parsed) {
-      const nlIdx = text.indexOf('\n', pos);
-      if (nlIdx < 0) break;
-      const lenStr = text.substring(pos, nlIdx).trim();
-      const len = parseInt(lenStr, 10);
-      if (isNaN(len) || len <= 0) { pos = nlIdx + 1; continue; }
+    // Find the matching end — look for ,"generic"] after the payload
+    // Search for the pattern: ","generic"] which closes this entry
+    const genericMarker = ',"generic"';
+    let searchPos = payloadStart;
+    let genericIdx = -1;
 
-      // Extract frame - try parsing it
-      // Note: len is in bytes but JS strings are UTF-16, so we try multiple approaches
-      const frameStart = nlIdx + 1;
+    // Find ","generic" that is NOT inside the escaped payload string
+    // The payload string ends at an unescaped quote before ,"generic"
+    while (searchPos < rawText.length) {
+      const gIdx = rawText.indexOf(genericMarker, searchPos);
+      if (gIdx < 0) break;
 
-      // Try to parse starting from frameStart
-      for (const tryLen of [len, len * 2, Math.floor(len / 2)]) {
-        const candidate = text.substring(frameStart, frameStart + tryLen);
-        try {
-          const arr = JSON.parse(candidate);
-          if (Array.isArray(arr)) {
-            // Look for wrb.fr,hNvQHb entry
-            const payload = findWrbFr(arr, 'hNvQHb');
-            if (payload) {
-              parsed = typeof payload === 'string' ? JSON.parse(payload) : payload;
-              break;
+      // Check that the quote before ","generic" is the closing quote of the payload
+      // by verifying it's preceded by an even number of backslashes (unescaped quote)
+      let backslashes = 0;
+      let checkPos = gIdx - 1;
+      while (checkPos >= 0 && rawText[checkPos] === '\\') { backslashes++; checkPos--; }
+
+      if (backslashes % 2 === 0 && rawText[gIdx - 1] === '"') {
+        // This could be our closing. But we need to verify it's not inside escaped content.
+        // Try to parse the wrb.fr array from bracketStart to after "]"
+        const closeBracket = rawText.indexOf(']', gIdx + genericMarker.length);
+        if (closeBracket >= 0) {
+          const outerStr = rawText.substring(bracketStart, closeBracket + 1);
+          try {
+            const outerArr = JSON.parse(outerStr);
+            // outerArr should be ["wrb.fr","hNvQHb","<payload_json_string>","generic"]
+            if (outerArr[0] === 'wrb.fr' && outerArr[1] === 'hNvQHb' && typeof outerArr[2] === 'string') {
+              const parsed = JSON.parse(outerArr[2]);
+              return extractMessagesFromParsed(parsed, convId);
             }
+          } catch (e) {
+            // Not the right closing, keep searching
           }
-        } catch (e) { /* try next length */ }
-      }
-
-      pos = frameStart + len;
-    }
-
-    // Fallback: try to find and extract the JSON payload directly using regex-like approach
-    if (!parsed) {
-      try {
-        // Find the wrb.fr array in the raw text by looking for valid JSON arrays
-        const marker = '"wrb.fr","hNvQHb","';
-        const idx = rawText.indexOf(marker);
-        if (idx >= 0) {
-          const payloadStart = idx + marker.length;
-          // Walk forward tracking escape chars to find the end quote
-          let esc = false, end = payloadStart;
-          for (let i = payloadStart; i < rawText.length; i++) {
-            if (esc) { esc = false; continue; }
-            if (rawText[i] === '\\') { esc = true; continue; }
-            if (rawText[i] === '"') { end = i; break; }
-          }
-          const raw = rawText.substring(payloadStart, end);
-          // Unescape: the string is JSON-escaped inside the outer JSON
-          const unescaped = raw.replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
-          parsed = JSON.parse(unescaped);
         }
-      } catch (e) {
-        return { error: 'Parse failed: ' + e.message, messages: [] };
       }
+      searchPos = gIdx + 1;
     }
 
-    if (!parsed) {
-      return { error: 'No parseable data found', messages: [] };
+    return { error: 'Failed to parse hNvQHb payload', messages: [] };
+  }
+
+  function extractMessagesFromParsed(parsed, convId) {
+    if (!parsed || !Array.isArray(parsed)) {
+      return { error: 'Invalid response structure', messages: [] };
     }
 
     if (!parsed || !Array.isArray(parsed)) {
