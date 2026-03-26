@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "Gemini Conversation Exporter",
+  "version": "1.0.0",
+  "description": "Export all your Gemini conversations to JSON and Markdown files.",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "downloads",
+    "scripting",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://gemini.google.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://gemini.google.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Gemini Exporter"
+  },
+  "icons": {}
+}

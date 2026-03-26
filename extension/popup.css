@@ -1,0 +1,208 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  width: 380px;
+  min-height: 460px;
+  font-family: 'Google Sans', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  background: #1a1a2e;
+  color: #e0e0e0;
+}
+
+.container {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+h1 {
+  font-size: 17px;
+  font-weight: 600;
+  background: linear-gradient(135deg, #4285f4, #9b72cb, #d96570);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.version {
+  font-size: 11px;
+  color: #666;
+  background: #252545;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.stats {
+  display: flex;
+  gap: 10px;
+}
+
+.stat-item {
+  flex: 1;
+  background: #16213e;
+  border-radius: 10px;
+  padding: 10px;
+  text-align: center;
+  border: 1px solid #252545;
+}
+
+.stat-value {
+  display: block;
+  font-size: 22px;
+  font-weight: 700;
+  color: #8ab4f8;
+}
+
+.stat-label {
+  display: block;
+  font-size: 10px;
+  color: #888;
+  margin-top: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.progress-section {
+  background: #16213e;
+  border-radius: 10px;
+  padding: 12px;
+  border: 1px solid #252545;
+}
+
+.progress-bar-container {
+  width: 100%;
+  height: 6px;
+  background: #252545;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #4285f4, #9b72cb);
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+
+.progress-text {
+  font-size: 12px;
+  color: #aaa;
+  margin-top: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 14px;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: inherit;
+}
+
+.btn:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.1);
+}
+
+.btn:active {
+  transform: translateY(0);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+  filter: none;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, #4285f4, #5e97f6);
+  color: white;
+}
+
+.btn-danger {
+  background: linear-gradient(135deg, #d96570, #e57373);
+  color: white;
+}
+
+.btn-secondary {
+  background: #252545;
+  color: #aaa;
+  border: 1px solid #333;
+}
+
+.log-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.log-section label {
+  font-size: 11px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+#logArea {
+  width: 100%;
+  height: 140px;
+  background: #0f0f23;
+  border: 1px solid #252545;
+  border-radius: 8px;
+  color: #8ab4f8;
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-size: 11px;
+  padding: 10px;
+  resize: none;
+  outline: none;
+  line-height: 1.5;
+}
+
+#logArea::placeholder {
+  color: #444;
+}
+
+#logArea::-webkit-scrollbar {
+  width: 6px;
+}
+
+#logArea::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#logArea::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 3px;
+}

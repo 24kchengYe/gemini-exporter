@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gemini Exporter</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="logo">
+        <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+          <circle cx="14" cy="14" r="13" stroke="url(#g1)" stroke-width="2"/>
+          <path d="M9 14 L14 9 L19 14 L14 19Z" fill="url(#g1)"/>
+          <defs>
+            <linearGradient id="g1" x1="0" y1="0" x2="28" y2="28">
+              <stop offset="0%" stop-color="#4285f4"/>
+              <stop offset="50%" stop-color="#9b72cb"/>
+              <stop offset="100%" stop-color="#d96570"/>
+            </linearGradient>
+          </defs>
+        </svg>
+        <h1>Gemini Exporter</h1>
+      </div>
+      <span class="version">v1.0</span>
+    </header>
+
+    <div class="stats" id="stats">
+      <div class="stat-item">
+        <span class="stat-value" id="exportedCount">0</span>
+        <span class="stat-label">Exported</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-value" id="totalCount">—</span>
+        <span class="stat-label">Total</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-value" id="skippedCount">0</span>
+        <span class="stat-label">Skipped</span>
+      </div>
+    </div>
+
+    <div class="progress-section" id="progressSection" style="display:none;">
+      <div class="progress-bar-container">
+        <div class="progress-bar" id="progressBar"></div>
+      </div>
+      <p class="progress-text" id="progressText">Preparing...</p>
+    </div>
+
+    <div class="actions">
+      <button id="startBtn" class="btn btn-primary">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M4 2l10 6-10 6V2z"/>
+        </svg>
+        Start Export
+      </button>
+      <button id="cancelBtn" class="btn btn-danger" style="display:none;">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          <rect x="3" y="3" width="10" height="10" rx="1"/>
+        </svg>
+        Cancel
+      </button>
+      <button id="resetBtn" class="btn btn-secondary">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M8 3a5 5 0 100 10A5 5 0 008 3zm0-2a7 7 0 110 14A7 7 0 018 1zm1 4v4H7V5h2zm0 5v2H7v-2h2z"/>
+        </svg>
+        Reset History
+      </button>
+    </div>
+
+    <div class="log-section">
+      <label for="logArea">Log</label>
+      <textarea id="logArea" readonly placeholder="Waiting to start..."></textarea>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

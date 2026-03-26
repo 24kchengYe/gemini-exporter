@@ -1,9 +1,9 @@
 ---
 name: gemini-exporter
 description: |
-  Export all Google Gemini conversations via Playwright DOM extraction.
-  Scrolls sidebar to discover all conversations, navigates to each one,
-  scrolls up to load full history, extracts messages from DOM.
+  Export all Google Gemini conversations via Chrome Extension or Playwright DOM extraction.
+  Chrome Extension method: one-click export with visual progress UI, resume support, and automatic file downloads.
+  Playwright method: scrolls sidebar to discover all conversations, navigates to each one, scrolls up to load full history, extracts messages from DOM.
 
   Trigger on these phrases:
   - "/gemini-exporter", "导出Gemini", "导出Gemini对话", "export gemini"
@@ -13,66 +13,66 @@ description: |
 
 # Gemini Exporter — Full Conversation Export
 
-Export **all** your Google Gemini conversations using Playwright + DOM extraction. No plugins needed.
+Export **all** your Google Gemini conversations. Two methods:
 
-## How It Works
+## Method 1: Chrome Extension (Recommended)
 
-1. Connects to Chrome via CDP (Chrome DevTools Protocol)
-2. Scrolls sidebar to discover all conversation URLs (saved to `urls_index.json` for resume)
-3. Navigates to each conversation
-4. Scrolls up repeatedly to load full message history (lazy-loading)
-5. Extracts User/Gemini messages from DOM (`.query-text` + `.markdown.markdown-main-panel`)
-6. Saves each conversation as JSON + Markdown, plus merged output files
+Located in `extension/` directory. Install via `chrome://extensions/` → Load unpacked.
 
-## Prerequisites
+### How It Works
+
+1. Content script runs on gemini.google.com pages
+2. Scrolls sidebar to discover all conversation URLs
+3. Navigates to each conversation via tab.update
+4. Content script scrolls up to load lazy-loaded messages
+5. Extracts User/Gemini messages from DOM selectors
+6. Downloads each conversation as JSON + Markdown via chrome.downloads API
+7. Generates merged output files at the end
+
+### Key Files
+
+- `extension/manifest.json` — Manifest V3 config
+- `extension/background.js` — Export orchestrator (tab management, download, resume logic)
+- `extension/content.js` — DOM extraction (sidebar scroll, message extraction, 3 strategies)
+- `extension/popup.html/js/css` — UI with progress bar, log, stats
+
+### DOM Selectors
+
+- User messages: `.query-text` (content prefix "You said" removed)
+- Gemini replies: `.markdown.markdown-main-panel`
+- Conversation containers: `.conversation-container`
+- Sidebar links: `a[href*="/app/"]`
+- Title: `document.title.replace(' - Google Gemini', '')`
+
+### Resume Support
+
+- `exportedIds` array stored in `chrome.storage.local`
+- `urlList` cached after first sidebar scan
+- Already-exported conversations skipped automatically
+- Safe to close popup and reopen — state persists
+
+## Method 2: Playwright Script (Legacy)
+
+### Prerequisites
 
 - Python 3.10+
 - `pip install playwright`
 - Chrome launched with `--remote-debugging-port=9222`
 
-## Usage
-
-### Step 1: Launch Chrome with debug port
-
-Close all Chrome windows first, then:
+### Usage
 
 ```bash
 # Windows
 "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="C:\Users\USERNAME\chrome-debug-profile" --proxy-server="http://127.0.0.1:2080"
 
-# macOS
-/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222 --user-data-dir="$HOME/chrome-debug-profile"
-```
-
-### Step 2: Log in to Gemini
-
-Open https://gemini.google.com/app in the debug Chrome, log in, expand sidebar.
-
-### Step 3: Run exporter
-
-```powershell
-cd path/to/gemini-exporter
+# Then run
 $env:NO_PROXY = "localhost,127.0.0.1"
 python -u scripts/gemini_export_dom.py
 ```
 
 ## Output
 
-- `gemini_export/{title}_{id}.json` — Individual conversation JSON
-- `gemini_export/{title}_{id}.md` — Individual conversation Markdown
-- `gemini_export/gemini_all_conversations.json` — Merged JSON
-- `gemini_export/gemini_all_conversations.md` — Merged Markdown
-- `gemini_export/urls_index.json` — Cached URL list (for resume)
-
-## Resume Support
-
-- URL index is cached: re-running skips sidebar collection
-- Already exported conversations are skipped by conv_id detection
-- Safe to interrupt and re-run
-
-## Key Details
-
-- Random delays (8-15s between conversations, 1-2.5s between scrolls) to avoid detection
-- 20-minute timeout per conversation for very long chats
-- DOM selectors: `.query-text` (user), `.markdown.markdown-main-panel` (Gemini)
-- Title from `document.title`
+- `gemini-export/{title}_{id}.json` — Individual conversation JSON
+- `gemini-export/{title}_{id}.md` — Individual conversation Markdown
+- `gemini-export/_all_conversations.json` — Merged JSON
+- `gemini-export/_all_conversations.md` — Merged Markdown
