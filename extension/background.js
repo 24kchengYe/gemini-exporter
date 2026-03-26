@@ -1,5 +1,6 @@
 // ============================================================
 // Gemini Conversation Exporter - Background Service Worker
+// Uses internal API via content script — no navigation needed
 // ============================================================
 
 let geminiTabId = null;
@@ -18,25 +19,16 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-function randomDelay(minMs, maxMs) {
-  return sleep(minMs + Math.random() * (maxMs - minMs));
-}
-
 function safeName(title, convId) {
   const safe = title.replace(/[\\/:*?"<>|\n\r\t]/g, '_').replace(/\s+/g, ' ').slice(0, 60).trim() || 'untitled';
   const idSuffix = convId ? '_' + convId.slice(0, 8) : '';
   return safe + idSuffix;
 }
 
-function extractConvId(url) {
-  const match = url.match(/\/app\/([a-zA-Z0-9_-]+)/);
-  return match ? match[1] : url.replace(/[^a-zA-Z0-9]/g, '').slice(-12);
-}
-
 async function getState() {
   return new Promise((resolve) => {
     chrome.storage.local.get(
-      ['exportedIds', 'urlList', 'running', 'cancelled', 'skippedCount', 'currentTitle', 'completed', 'conversations'],
+      ['exportedIds', 'chatList', 'running', 'cancelled', 'skippedCount', 'currentTitle', 'completed', 'conversations'],
       resolve
     );
   });
@@ -57,44 +49,24 @@ async function ensureGeminiTab() {
   const tabs = await chrome.tabs.query({ url: 'https://gemini.google.com/*' });
   if (tabs.length > 0) {
     geminiTabId = tabs[0].id;
-    await chrome.tabs.update(geminiTabId, { active: true });
-    sendLog('Using existing Gemini tab.');
     return geminiTabId;
   }
-  const tab = await chrome.tabs.create({ url: 'https://gemini.google.com/app', active: true });
+  const tab = await chrome.tabs.create({ url: 'https://gemini.google.com/app', active: false });
   geminiTabId = tab.id;
-  await waitForTabLoad(geminiTabId);
-  await sleep(3000);
-  sendLog('Opened new Gemini tab.');
-  return geminiTabId;
-}
-
-function waitForTabLoad(tabId) {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      chrome.tabs.onUpdated.removeListener(listener);
-      resolve(); // resolve anyway after timeout
-    }, 30000);
-
-    function listener(updatedTabId, changeInfo) {
-      if (updatedTabId === tabId && changeInfo.status === 'complete') {
-        clearTimeout(timeout);
+  // Wait for load
+  await new Promise((resolve) => {
+    function listener(id, info) {
+      if (id === tab.id && info.status === 'complete') {
         chrome.tabs.onUpdated.removeListener(listener);
         resolve();
       }
     }
     chrome.tabs.onUpdated.addListener(listener);
+    setTimeout(resolve, 15000);
   });
+  await sleep(2000);
+  return geminiTabId;
 }
-
-async function navigateAndWait(tabId, url) {
-  const loadPromise = waitForTabLoad(tabId);
-  await chrome.tabs.update(tabId, { url });
-  await loadPromise;
-  await sleep(3000);
-}
-
-// ---- Content script messaging ----
 
 async function sendToContent(tabId, message) {
   try {
@@ -102,10 +74,8 @@ async function sendToContent(tabId, message) {
       target: { tabId },
       files: ['content.js'],
     });
-  } catch (e) {
-    // Content script might already be there
-  }
-  await sleep(500);
+  } catch (e) { /* already injected */ }
+  await sleep(300);
 
   return new Promise((resolve, reject) => {
     chrome.tabs.sendMessage(tabId, message, (response) => {
@@ -122,7 +92,7 @@ async function sendToContent(tabId, message) {
 
 function conversationToMarkdown(conv) {
   const sep = '============================================================';
-  let md = `${sep}\nConversation: ${conv.title}\nMessages: ${conv.messages.length}\nURL: ${conv.url}\n${sep}\n\n`;
+  let md = `${sep}\nConversation: ${conv.title}\nMessages: ${conv.messageCount || conv.messages.length}\nURL: ${conv.url || ''}\n${sep}\n\n`;
   for (const msg of conv.messages) {
     const label = msg.role === 'user' ? '--- User ---' : '--- Gemini ---';
     md += `${label}\n\n${msg.content}\n\n`;
@@ -144,80 +114,86 @@ async function startExport() {
 
   try {
     const tabId = await ensureGeminiTab();
+    sendLog('Connected to Gemini tab.');
 
-    // Step 1: Collect URLs
-    let urlList = state.urlList || [];
+    // Step 1: Get conversation list via API
+    let chatList = state.chatList || [];
     let exportedIds = state.exportedIds || [];
     let conversations = state.conversations || [];
 
-    if (urlList.length === 0) {
-      sendLog('Collecting conversation URLs from sidebar...');
-      await navigateAndWait(tabId, 'https://gemini.google.com/app');
-      await sleep(2000);
+    if (chatList.length === 0) {
+      sendLog('Fetching conversation list via API...');
 
-      const resp = await sendToContent(tabId, { action: 'collectUrls' });
-      if (!resp || !resp.urls || resp.urls.length === 0) {
-        sendLog('No conversations found in sidebar.');
+      const resp = await sendToContent(tabId, { action: 'apiListConversations', pageSize: 50 });
+      if (resp?.error) {
+        sendLog(`Error: ${resp.error}`);
+        await setState({ running: false });
+        return;
+      }
+      if (!resp?.conversations || resp.conversations.length === 0) {
+        sendLog('No conversations found.');
         await setState({ running: false });
         return;
       }
 
-      urlList = resp.urls;
-      await setState({ urlList });
-      sendLog(`Found ${urlList.length} conversations.`);
+      chatList = resp.conversations;
+      await setState({ chatList });
+      sendLog(`Found ${chatList.length} conversations via API.`);
     } else {
-      sendLog(`Resuming with ${urlList.length} URLs, ${exportedIds.length} already exported.`);
+      sendLog(`Resuming: ${chatList.length} total, ${exportedIds.length} already exported.`);
     }
 
-    // Step 2: Export each conversation (store data in memory, not download yet)
+    // Step 2: Export each conversation via API (no navigation!)
     let skippedCount = state.skippedCount || 0;
 
-    for (let i = 0; i < urlList.length; i++) {
+    for (let i = 0; i < chatList.length; i++) {
       if (await isCancelled()) {
-        sendLog('Export cancelled by user.');
+        sendLog('Cancelled by user.');
         break;
       }
 
-      const url = urlList[i];
-      const convId = extractConvId(url);
+      const chat = chatList[i];
+      const convId = chat.id;
 
       if (exportedIds.includes(convId)) {
         skippedCount++;
         continue;
       }
 
-      const fullUrl = url.startsWith('http') ? url : `https://gemini.google.com${url}`;
-
-      sendLog(`(${i + 1}/${urlList.length}) Navigating...`);
+      sendLog(`(${i + 1}/${chatList.length}) "${chat.title}"...`);
       await setState({
-        currentTitle: `Loading... (${i + 1}/${urlList.length})`,
+        currentTitle: `${chat.title} (${i + 1}/${chatList.length})`,
         skippedCount,
       });
       sendProgress(await getState());
 
       try {
-        await navigateAndWait(tabId, fullUrl);
-        await sleep(2000);
+        const convData = await sendToContent(tabId, { action: 'apiGetConversation', convId });
 
-        const convData = await sendToContent(tabId, { action: 'extractConversation', url: fullUrl });
-
-        if (!convData || !convData.messages || convData.messages.length === 0) {
-          sendLog(`  Skipped (no messages): ${convId.slice(0, 8)}`);
+        if (convData?.error) {
+          sendLog(`  Error: ${convData.error}`);
           skippedCount++;
           await setState({ skippedCount });
-          sendProgress(await getState());
           continue;
         }
 
-        const title = convData.title || 'Untitled';
-        const baseName = safeName(title, convId);
-        convData.id = convId;
-        convData.baseName = baseName;
+        if (!convData?.messages || convData.messages.length === 0) {
+          sendLog(`  Skipped (no messages)`);
+          skippedCount++;
+          await setState({ skippedCount });
+          continue;
+        }
 
-        sendLog(`  "${title}" - ${convData.messages.length} msgs`);
-        await setState({ currentTitle: title });
+        // Use title from list if API didn't return one
+        if (convData.title === 'Untitled' && chat.title !== 'Untitled') {
+          convData.title = chat.title;
+        }
+        convData.url = `https://gemini.google.com/app/${convId}`;
 
-        // Download immediately via content script Blob URLs
+        const baseName = safeName(convData.title, convId);
+        sendLog(`  ${convData.messages.length} msgs → ${baseName}`);
+
+        // Download immediately
         const jsonContent = JSON.stringify(convData, null, 2);
         const mdContent = conversationToMarkdown(convData);
         await sendToContent(tabId, {
@@ -230,21 +206,18 @@ async function startExport() {
 
         conversations.push(convData);
         exportedIds.push(convId);
-        await setState({ exportedIds, skippedCount });
+        await setState({ exportedIds, skippedCount, conversations });
         sendProgress(await getState());
 
-        await randomDelay(3000, 6000);
+        // Small delay to avoid rate limiting
+        await sleep(500);
       } catch (err) {
         sendLog(`  Error: ${err.message.slice(0, 80)}`);
         skippedCount++;
         await setState({ skippedCount });
-        sendProgress(await getState());
-        await sleep(2000);
+        await sleep(1000);
       }
     }
-
-    // Save conversations to storage
-    await setState({ conversations, skippedCount });
 
     // Step 3: Download merged files
     if (conversations.length > 0 && !(await isCancelled())) {
@@ -258,24 +231,17 @@ async function startExport() {
         mergedMd += conversationToMarkdown(conv) + '\n\n';
       }
       mergedFiles['_all_conversations.md'] = mergedMd;
-      mergedFiles['_urls_index.json'] = JSON.stringify(urlList, null, 2);
-
-      await navigateAndWait(tabId, 'https://gemini.google.com/app');
-      await sleep(1000);
+      mergedFiles['_urls_index.json'] = JSON.stringify(chatList, null, 2);
 
       try {
         await sendToContent(tabId, { action: 'downloadFiles', files: mergedFiles });
-        sendLog('Merged files downloaded.');
+        sendLog('Merged files saved.');
       } catch (err) {
         sendLog(`Merged download error: ${err.message}`);
       }
     }
 
-    await setState({
-      running: false,
-      completed: true,
-      currentTitle: '',
-    });
+    await setState({ running: false, completed: true, currentTitle: '' });
     const s = await getState();
     chrome.runtime.sendMessage({ type: 'done', state: s }).catch(() => {});
     sendLog(`Done! ${exportedIds.length} exported, ${skippedCount} skipped.`);
@@ -297,11 +263,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     sendResponse({ ok: true });
   } else if (msg.action === 'resetExport') {
     chrome.storage.local.remove(
-      ['exportedIds', 'urlList', 'skippedCount', 'currentTitle', 'running', 'completed', 'cancelled', 'conversations'],
+      ['exportedIds', 'chatList', 'skippedCount', 'currentTitle', 'running', 'completed', 'cancelled', 'conversations'],
       () => sendResponse({ ok: true })
     );
   } else if (msg.action === 'downloadSaved') {
-    // Re-trigger download of saved data
     downloadSavedData();
     sendResponse({ ok: true });
   }
@@ -317,11 +282,11 @@ async function downloadSavedData() {
   }
 
   const tabId = await ensureGeminiTab();
-  await sleep(1000);
+  await sleep(500);
 
   const files = {};
   for (const conv of conversations) {
-    const name = conv.baseName || safeName(conv.title || 'Untitled', conv.id);
+    const name = safeName(conv.title || 'Untitled', conv.id);
     files[`${name}.json`] = JSON.stringify(conv, null, 2);
     files[`${name}.md`] = conversationToMarkdown(conv);
   }
@@ -331,7 +296,6 @@ async function downloadSavedData() {
     mergedMd += conversationToMarkdown(conv) + '\n\n';
   }
   files['_all_conversations.md'] = mergedMd;
-  files['_urls_index.json'] = JSON.stringify(state.urlList || [], null, 2);
 
   try {
     await sendToContent(tabId, { action: 'downloadFiles', files });

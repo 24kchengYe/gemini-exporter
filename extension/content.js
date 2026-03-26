@@ -1,320 +1,35 @@
 // ============================================================
 // Gemini Conversation Exporter - Content Script
-// Runs on gemini.google.com pages
+// Uses internal API (batchexecute) for fast, complete extraction
+// Falls back to DOM extraction if API fails
 // ============================================================
 
 (function () {
-  // Prevent double-injection
   if (window.__geminiExporterInjected) return;
   window.__geminiExporterInjected = true;
-
-  // ---- URL Collection ----
-
-  async function collectUrls() {
-    // Find the sidebar scrollable container that holds conversation links
-    const allLinks = () => {
-      const anchors = document.querySelectorAll('a[href*="/app/"]');
-      const urls = new Set();
-      anchors.forEach((a) => {
-        const href = a.getAttribute('href');
-        // Only conversation links, not the main /app page
-        if (href && /\/app\/[a-zA-Z0-9]/.test(href)) {
-          urls.add(href);
-        }
-      });
-      return urls;
-    };
-
-    // Find scrollable sidebar container
-    function findSidebarScroller() {
-      // Try common sidebar containers
-      const candidates = document.querySelectorAll(
-        'nav, [role="navigation"], [class*="sidebar"], [class*="history"], [class*="drawer"]'
-      );
-      for (const el of candidates) {
-        if (el.scrollHeight > el.clientHeight + 50) {
-          return el;
-        }
-      }
-
-      // Fallback: find any scrollable ancestor of conversation links
-      const firstLink = document.querySelector('a[href*="/app/"]');
-      if (firstLink) {
-        let parent = firstLink.parentElement;
-        while (parent && parent !== document.body) {
-          if (parent.scrollHeight > parent.clientHeight + 50) {
-            return parent;
-          }
-          parent = parent.parentElement;
-        }
-      }
-
-      return null;
-    }
-
-    // Scroll sidebar to load all conversations
-    const scroller = findSidebarScroller();
-    let prevCount = 0;
-    let stableRounds = 0;
-    const maxStableRounds = 12;
-
-    if (scroller) {
-      for (let i = 0; i < 200; i++) {
-        // Safety limit
-        scroller.scrollTop = scroller.scrollHeight;
-        await new Promise((r) => setTimeout(r, 1500));
-
-        const currentCount = allLinks().size;
-        if (currentCount === prevCount) {
-          stableRounds++;
-          if (stableRounds >= maxStableRounds) break;
-        } else {
-          stableRounds = 0;
-          prevCount = currentCount;
-        }
-      }
-      // Scroll back to top
-      scroller.scrollTop = 0;
-    }
-
-    const urls = Array.from(allLinks());
-    return { urls, count: urls.length };
-  }
-
-  // ---- Conversation Extraction ----
-
-  async function extractConversation(url) {
-    // Wait for conversation containers to appear
-    await waitForSelector('.conversation-container, [class*="conversation"], [class*="message"]', 15000);
-    await new Promise((r) => setTimeout(r, 1500));
-
-    // Scroll to top to load lazy-loaded messages
-    await scrollConversationToTop();
-
-    // Extract messages
-    const messages = [];
-
-    // Strategy 1: query-text + markdown panels (known Gemini structure)
-    const turns = document.querySelectorAll(
-      '.conversation-container, [class*="conversation-turn"], [class*="query-content"], [class*="response-container"], [class*="message-content"]'
-    );
-
-    if (turns.length > 0) {
-      // Try structured extraction from conversation containers
-      const convContainers = document.querySelectorAll('.conversation-container');
-      if (convContainers.length > 0) {
-        convContainers.forEach((container) => {
-          // User message
-          const userEl = container.querySelector(
-            '.query-text, [class*="query-text"], [class*="user-message"], [class*="request"]'
-          );
-          if (userEl) {
-            let text = userEl.innerText.trim();
-            // Remove common prefixes
-            text = text.replace(/^(You said|You)\s*\n*/i, '').trim();
-            if (text) {
-              messages.push({ role: 'user', content: text });
-            }
-          }
-
-          // Gemini response
-          const geminiEl = container.querySelector(
-            '.markdown.markdown-main-panel, [class*="markdown-main"], [class*="model-response"], [class*="response-content"]'
-          );
-          if (geminiEl) {
-            const text = geminiEl.innerText.trim();
-            if (text) {
-              messages.push({ role: 'assistant', content: text });
-            }
-          }
-        });
-      }
-    }
-
-    // Strategy 2: Fallback - try to find alternating user/model blocks
-    if (messages.length === 0) {
-      const queryTexts = document.querySelectorAll(
-        '.query-text, [class*="query-text"], [data-message-author-role="user"]'
-      );
-      const responseTexts = document.querySelectorAll(
-        '.markdown.markdown-main-panel, [class*="markdown-main"], [data-message-author-role="model"]'
-      );
-
-      const maxLen = Math.max(queryTexts.length, responseTexts.length);
-      for (let i = 0; i < maxLen; i++) {
-        if (i < queryTexts.length) {
-          let text = queryTexts[i].innerText.trim();
-          text = text.replace(/^(You said|You)\s*\n*/i, '').trim();
-          if (text) messages.push({ role: 'user', content: text });
-        }
-        if (i < responseTexts.length) {
-          const text = responseTexts[i].innerText.trim();
-          if (text) messages.push({ role: 'assistant', content: text });
-        }
-      }
-    }
-
-    // Strategy 3: Ultra-fallback - grab all text blocks with role inference
-    if (messages.length === 0) {
-      const allBlocks = document.querySelectorAll(
-        '[class*="message"], [class*="turn"], [class*="content-block"]'
-      );
-      allBlocks.forEach((block) => {
-        const text = block.innerText.trim();
-        if (!text || text.length < 2) return;
-        const hasMarkdown = block.querySelector('code, pre, ol, ul, table, h1, h2, h3');
-        const role = hasMarkdown ? 'assistant' : 'user';
-        messages.push({ role, content: text });
-      });
-    }
-
-    // Title extraction: try multiple strategies
-    let title = '';
-
-    // Strategy 1: Try to find the conversation title element in the page
-    const titleCandidates = [
-      'h1.conversation-title',
-      '[class*="conversation-title"]',
-      '[class*="chat-title"]',
-      'h1',
-    ];
-    for (const sel of titleCandidates) {
-      const el = document.querySelector(sel);
-      if (el) {
-        const t = el.innerText.trim();
-        if (t && t !== 'Google Gemini' && t !== 'Gemini' && t.length > 1) {
-          title = t;
-          break;
-        }
-      }
-    }
-
-    // Strategy 2: Use document.title but strip "Google Gemini" variations
-    if (!title) {
-      title = document.title
-        .replace(/^Google Gemini\s*[-–—:]\s*/i, '')  // "Google Gemini - XXX" -> "XXX"
-        .replace(/\s*[-–—:]\s*Google Gemini\s*$/i, '')  // "XXX - Google Gemini" -> "XXX"
-        .trim();
-      // If title is still just "Google Gemini" or empty, try first user message
-      if (!title || /^Google\s*Gemini$/i.test(title)) {
-        const firstUser = document.querySelector('.query-text, [class*="query-text"]');
-        if (firstUser) {
-          title = firstUser.innerText.replace(/^(You said|You)\s*\n*/i, '').trim().slice(0, 80);
-        }
-      }
-    }
-
-    if (!title) title = 'Untitled';
-
-    return {
-      title,
-      messages,
-      url: url || window.location.href,
-      exportedAt: new Date().toISOString(),
-    };
-  }
-
-  // ---- Helpers ----
-
-  function waitForSelector(selector, timeout = 10000) {
-    return new Promise((resolve) => {
-      const el = document.querySelector(selector);
-      if (el) return resolve(el);
-
-      const observer = new MutationObserver(() => {
-        const el = document.querySelector(selector);
-        if (el) {
-          observer.disconnect();
-          resolve(el);
-        }
-      });
-
-      observer.observe(document.body, { childList: true, subtree: true });
-
-      setTimeout(() => {
-        observer.disconnect();
-        resolve(null);
-      }, timeout);
-    });
-  }
-
-  async function scrollConversationToTop() {
-    // Find the main scrollable conversation area
-    function findConvScroller() {
-      const candidates = document.querySelectorAll(
-        'main, [role="main"], [class*="chat-container"], [class*="conversation-scroll"], [class*="infinite-scroller"]'
-      );
-      for (const el of candidates) {
-        if (el.scrollHeight > el.clientHeight + 100) {
-          return el;
-        }
-      }
-
-      // Fallback: look for scrollable parent of conversation content
-      const convEl = document.querySelector(
-        '.conversation-container, [class*="conversation"]'
-      );
-      if (convEl) {
-        let parent = convEl.parentElement;
-        while (parent && parent !== document.body) {
-          if (parent.scrollHeight > parent.clientHeight + 100) {
-            return parent;
-          }
-          parent = parent.parentElement;
-        }
-      }
-
-      return document.documentElement;
-    }
-
-    const scroller = findConvScroller();
-    if (!scroller) return;
-
-    // Repeatedly scroll to top and wait for lazy-loaded content
-    // Gemini loads more messages as you scroll up, increasing scrollHeight
-    let prevHeight = scroller.scrollHeight;
-    let stableRounds = 0;
-    const maxStableRounds = 5; // stop after 5 rounds with no new content
-    const maxAttempts = 120;   // safety limit for very long conversations
-
-    for (let i = 0; i < maxAttempts; i++) {
-      // Scroll to very top
-      scroller.scrollTop = 0;
-      await new Promise((r) => setTimeout(r, 1500));
-
-      const newHeight = scroller.scrollHeight;
-      if (newHeight > prevHeight) {
-        // New content loaded — reset stable counter
-        prevHeight = newHeight;
-        stableRounds = 0;
-      } else {
-        stableRounds++;
-        if (stableRounds >= maxStableRounds) break;
-      }
-    }
-
-    // Final: scroll to very bottom then back to top to ensure full render
-    scroller.scrollTop = scroller.scrollHeight;
-    await new Promise((r) => setTimeout(r, 1000));
-    scroller.scrollTop = 0;
-    await new Promise((r) => setTimeout(r, 500));
-  }
 
   // ---- Message handler ----
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    if (msg.action === 'collectUrls') {
-      collectUrls()
+    if (msg.action === 'extractTokens') {
+      extractTokens()
         .then((result) => sendResponse(result))
-        .catch((err) => sendResponse({ error: err.message, urls: [] }));
-      return true; // async response
+        .catch((err) => sendResponse({ error: err.message }));
+      return true;
     }
 
-    if (msg.action === 'extractConversation') {
-      extractConversation(msg.url)
+    if (msg.action === 'apiListConversations') {
+      apiListConversations(msg.pageSize || 50)
         .then((result) => sendResponse(result))
-        .catch((err) => sendResponse({ error: err.message, messages: [] }));
-      return true; // async response
+        .catch((err) => sendResponse({ error: err.message }));
+      return true;
+    }
+
+    if (msg.action === 'apiGetConversation') {
+      apiGetConversation(msg.convId)
+        .then((result) => sendResponse(result))
+        .catch((err) => sendResponse({ error: err.message }));
+      return true;
     }
 
     if (msg.action === 'downloadFiles') {
@@ -329,6 +44,244 @@
       return false;
     }
   });
+
+  // ---- Token extraction from current page HTML ----
+
+  async function extractTokens() {
+    // Try extracting from current page first
+    let html = document.documentElement.innerHTML;
+
+    // If we're not on the right page, fetch it
+    if (!html.includes('SNlM0e')) {
+      const resp = await fetch('https://gemini.google.com/app', {
+        credentials: 'include',
+      });
+      html = await resp.text();
+    }
+
+    function extract(key) {
+      const patterns = [
+        new RegExp(`"${key}"\\s*:\\s*"([^"]+)"`),
+        new RegExp(`\\["${key}","([^"]+)"\\]`),
+      ];
+      for (const re of patterns) {
+        const m = html.match(re);
+        if (m) return m[1];
+      }
+      return null;
+    }
+
+    const at = extract('SNlM0e');
+    const bl = extract('cfb2h');
+    const sid = extract('FdrFJe');
+    const hl = extract('TuX5cc') || 'en';
+
+    if (!at) throw new Error('Failed to extract SNlM0e token. Make sure you are logged in.');
+
+    return { at, bl, sid, hl };
+  }
+
+  // ---- batchexecute caller ----
+
+  async function batchExecute(tokens, rpcId, payload) {
+    const reqId = Math.floor(Math.random() * 900000) + 100000;
+    const BATCHEXECUTE_URL = 'https://gemini.google.com/_/BardChatUi/data/batchexecute';
+
+    const fReq = JSON.stringify([[
+      [rpcId, JSON.stringify(payload), null, 'generic']
+    ]]);
+
+    const params = new URLSearchParams({
+      'rpcids': rpcId,
+      'source-path': '/app',
+      'hl': tokens.hl,
+      '_reqid': String(reqId),
+      'rt': 'c',
+    });
+    if (tokens.bl) params.set('bl', tokens.bl);
+    if (tokens.sid) params.set('f.sid', tokens.sid);
+
+    const body = new URLSearchParams({
+      'at': tokens.at,
+      'f.req': fReq,
+    });
+
+    const resp = await fetch(`${BATCHEXECUTE_URL}?${params.toString()}`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8',
+        'Origin': 'https://gemini.google.com',
+        'Referer': 'https://gemini.google.com/',
+        'X-Same-Domain': '1',
+      },
+      body: body.toString(),
+    });
+
+    if (!resp.ok) {
+      throw new Error(`API error: ${resp.status}`);
+    }
+
+    const text = await resp.text();
+    return parseResponse(text, rpcId);
+  }
+
+  // ---- Response parsing ----
+
+  function parseResponse(rawText, rpcId) {
+    let text = rawText;
+    if (text.startsWith(")]}'")) {
+      text = text.substring(text.indexOf('\n') + 1);
+    }
+
+    // Parse length-prefixed frames
+    const frames = [];
+    let pos = 0;
+    while (pos < text.length) {
+      const nlIdx = text.indexOf('\n', pos);
+      if (nlIdx < 0) break;
+      const len = parseInt(text.substring(pos, nlIdx), 10);
+      if (isNaN(len)) { pos = nlIdx + 1; continue; }
+      const frameText = text.substring(nlIdx + 1, nlIdx + 1 + len);
+      pos = nlIdx + 1 + len;
+      try {
+        frames.push(JSON.parse(frameText));
+      } catch (e) { /* skip */ }
+    }
+
+    for (const frame of frames) {
+      const payload = findRpcPayload(frame, rpcId);
+      if (payload !== null) {
+        try { return JSON.parse(payload); } catch (e) { return payload; }
+      }
+    }
+    return null;
+  }
+
+  function findRpcPayload(node, rpcId) {
+    if (!Array.isArray(node)) return null;
+    if (node[0] === 'wrb.fr' && node[1] === rpcId && typeof node[2] === 'string') {
+      return node[2];
+    }
+    for (const child of node) {
+      const result = findRpcPayload(child, rpcId);
+      if (result !== null) return result;
+    }
+    return null;
+  }
+
+  // ---- API: List all conversations ----
+
+  let _cachedTokens = null;
+
+  async function getTokens() {
+    if (!_cachedTokens) {
+      _cachedTokens = await extractTokens();
+    }
+    return _cachedTokens;
+  }
+
+  async function apiListConversations(pageSize) {
+    const tokens = await getTokens();
+    const allChats = [];
+
+    for (const pinFlag of [1, 0]) {
+      let nextToken = null;
+      do {
+        const payload = [pageSize, nextToken, [pinFlag, null, 1]];
+        const data = await batchExecute(tokens, 'MaZiqc', payload);
+        if (!data) break;
+
+        const rows = data[2] || data[0] || [];
+        if (!Array.isArray(rows) || rows.length === 0) break;
+
+        for (const row of rows) {
+          if (!Array.isArray(row)) continue;
+          allChats.push({
+            id: row[0],
+            title: row[1] || 'Untitled',
+            isPinned: !!row[2],
+            timestamp: row[5] ? row[5][0] : null,
+          });
+        }
+
+        nextToken = data[1] || null;
+      } while (nextToken);
+    }
+
+    // Deduplicate
+    const seen = new Set();
+    const unique = allChats.filter(c => {
+      if (seen.has(c.id)) return false;
+      seen.add(c.id);
+      return true;
+    });
+
+    return { conversations: unique, count: unique.length };
+  }
+
+  // ---- API: Get single conversation ----
+
+  async function apiGetConversation(convId) {
+    const tokens = await getTokens();
+    const payload = [convId, 1000, null, 1, [1], [4], null, 1];
+    const data = await batchExecute(tokens, 'hNvQHb', payload);
+
+    if (!data) return { error: 'No data returned', messages: [] };
+
+    const messages = [];
+    const turns = data[0] || [];
+
+    for (const turn of turns) {
+      if (!Array.isArray(turn)) continue;
+
+      // User message: turn[2][0][0]
+      try {
+        const userText = turn[2]?.[0]?.[0];
+        if (userText && typeof userText === 'string') {
+          messages.push({ role: 'user', content: userText });
+        }
+      } catch (e) { /* skip */ }
+
+      // Model response: turn[3][0] = selected candidate
+      try {
+        const candidates = turn[3]?.[0];
+        if (Array.isArray(candidates)) {
+          const parts = candidates[1];
+          if (Array.isArray(parts)) {
+            let text = '';
+            for (const part of parts) {
+              if (typeof part === 'string') {
+                text += part;
+              } else if (Array.isArray(part) && typeof part[0] === 'string') {
+                text += part[0];
+              }
+            }
+            if (text) {
+              messages.push({ role: 'assistant', content: text });
+            }
+          }
+        }
+      } catch (e) { /* skip */ }
+    }
+
+    // Title
+    let title = 'Untitled';
+    try {
+      if (data[4] && typeof data[4] === 'string') {
+        title = data[4];
+      }
+    } catch (e) { /* default */ }
+
+    return {
+      id: convId,
+      title,
+      messages,
+      messageCount: messages.length,
+      url: `https://gemini.google.com/app/${convId}`,
+      exportedAt: new Date().toISOString(),
+    };
+  }
 
   // ---- File download via Blob URLs ----
 
@@ -348,9 +301,7 @@
       document.body.appendChild(a);
       a.click();
 
-      // Small delay to avoid browser throttling rapid downloads
       await new Promise((r) => setTimeout(r, 100));
-
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
       downloaded++;

@@ -21,7 +21,7 @@
 
   function updateUI(state) {
     const exported = state.exportedIds ? state.exportedIds.length : 0;
-    const total = state.urlList ? state.urlList.length : 0;
+    const total = state.chatList ? state.chatList.length : 0;
     const skipped = state.skippedCount || 0;
 
     exportedCount.textContent = exported;
@@ -66,7 +66,7 @@
 
   // Load initial state
   chrome.storage.local.get(
-    ['exportedIds', 'urlList', 'running', 'skippedCount', 'currentTitle', 'completed'],
+    ['exportedIds', 'chatList', 'running', 'skippedCount', 'currentTitle', 'completed'],
     (data) => {
       updateUI(data);
       if (data.exportedIds && data.exportedIds.length > 0) {
@@ -119,7 +119,7 @@
   resetBtn.addEventListener('click', () => {
     if (!confirm('Clear all export history? This will re-export everything next time.')) return;
     chrome.storage.local.remove(
-      ['exportedIds', 'urlList', 'skippedCount', 'currentTitle', 'running', 'completed'],
+      ['exportedIds', 'chatList', 'skippedCount', 'currentTitle', 'running', 'completed'],
       () => {
         log('History cleared.');
         updateUI({});
@@ -130,7 +130,7 @@
   // Poll storage every 2s to keep UI fresh (in case popup was reopened)
   setInterval(() => {
     chrome.storage.local.get(
-      ['exportedIds', 'urlList', 'running', 'skippedCount', 'currentTitle', 'completed'],
+      ['exportedIds', 'chatList', 'running', 'skippedCount', 'currentTitle', 'completed'],
       updateUI
     );
   }, 2000);
