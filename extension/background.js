@@ -217,16 +217,20 @@ async function startExport() {
         sendLog(`  "${title}" - ${convData.messages.length} msgs`);
         await setState({ currentTitle: title });
 
-        // Store conversation data in storage (not download yet)
+        // Download immediately via content script Blob URLs
+        const jsonContent = JSON.stringify(convData, null, 2);
+        const mdContent = conversationToMarkdown(convData);
+        await sendToContent(tabId, {
+          action: 'downloadFiles',
+          files: {
+            [`${baseName}.json`]: jsonContent,
+            [`${baseName}.md`]: mdContent,
+          },
+        });
+
         conversations.push(convData);
         exportedIds.push(convId);
-
-        // Save periodically (every 5 conversations) to avoid losing progress
-        if (conversations.length % 5 === 0) {
-          await setState({ conversations, exportedIds, skippedCount });
-        } else {
-          await setState({ exportedIds, skippedCount });
-        }
+        await setState({ exportedIds, skippedCount });
         sendProgress(await getState());
 
         await randomDelay(3000, 6000);
@@ -239,44 +243,31 @@ async function startExport() {
       }
     }
 
-    // Save all conversations to storage
+    // Save conversations to storage
     await setState({ conversations, skippedCount });
 
-    // Step 3: Trigger download via content script (it has DOM access for Blob URLs)
+    // Step 3: Download merged files
     if (conversations.length > 0 && !(await isCancelled())) {
-      sendLog(`Preparing download package (${conversations.length} conversations)...`);
+      sendLog('Generating merged files...');
 
-      // Build the files object to send to content script for download
-      const files = {};
-
-      for (const conv of conversations) {
-        const name = conv.baseName || safeName(conv.title || 'Untitled', conv.id);
-        files[`${name}.json`] = JSON.stringify(conv, null, 2);
-        files[`${name}.md`] = conversationToMarkdown(conv);
-      }
-
-      // Merged files
-      files['_all_conversations.json'] = JSON.stringify(conversations, null, 2);
+      const mergedFiles = {};
+      mergedFiles['_all_conversations.json'] = JSON.stringify(conversations, null, 2);
 
       let mergedMd = `# Gemini Conversations Export\n\nTotal: ${conversations.length} conversations\nDate: ${new Date().toISOString()}\n\n`;
       for (const conv of conversations) {
         mergedMd += conversationToMarkdown(conv) + '\n\n';
       }
-      files['_all_conversations.md'] = mergedMd;
+      mergedFiles['_all_conversations.md'] = mergedMd;
+      mergedFiles['_urls_index.json'] = JSON.stringify(urlList, null, 2);
 
-      // URL index
-      files['_urls_index.json'] = JSON.stringify(urlList, null, 2);
-
-      // Navigate to Gemini page (need content script context)
       await navigateAndWait(tabId, 'https://gemini.google.com/app');
       await sleep(1000);
 
-      // Send files to content script to trigger downloads via Blob URLs
       try {
-        await sendToContent(tabId, { action: 'downloadFiles', files });
-        sendLog('All files downloaded to gemini-export/ folder.');
+        await sendToContent(tabId, { action: 'downloadFiles', files: mergedFiles });
+        sendLog('Merged files downloaded.');
       } catch (err) {
-        sendLog(`Download error: ${err.message}. Data is saved in extension storage - try "Download Data" button.`);
+        sendLog(`Merged download error: ${err.message}`);
       }
     }
 
